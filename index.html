@@ -33,6 +33,11 @@
     .pill { display:inline-block; padding:2px 6px; margin:0 1px; border-radius:5px; background:rgba(255,255,255,.14); }
     #hud.xr-overlay { pointer-events:none; }
     #hud button, #hud select { pointer-events:auto; }
+    /* The stock A-Frame XR button was overlapped by the full-screen swipe layer on some phones.
+       Hide it and use our own explicit Start AR Camera button instead. */
+    .a-enter-vr, .a-enter-ar, .a-enter-vr-button, .a-enter-ar-button,
+    .a-vr-mode-ui, .a-xr-mode-ui { display:none !important; visibility:hidden !important; pointer-events:none !important; }
+    #arBtn { min-width: 132px; }
     @media (max-width: 420px) {
       .bottom-panel { margin-bottom:60px; }
       button { min-height:42px; padding:9px 11px; font-size:12px; }
@@ -90,7 +95,7 @@
     <div id="swipeSurface" aria-label="Swipe upward to throw the paper"></div>
     <div class="top-panel">
       <div class="brand">PAPER TOSS · WEBAR</div>
-      <div id="status">Enter AR, place the game, aim at the bin, then swipe upward to throw. Faster swipes travel farther.</div>
+      <div id="status">Tap Start AR Camera, place the game, aim at the bin, then swipe upward to throw. Faster swipes travel farther.</div>
       <div id="assetWarning"></div>
       <div class="stats">
         <div class="stat"><span>POINTS</span><b id="scoreValue">0</b></div>
@@ -102,6 +107,7 @@
 
     <div class="bottom-panel">
       <div class="controls">
+        <button id="arBtn" class="primary">Start AR Camera</button>
         <button id="placeBtn" class="primary" disabled>Place game</button>
         <button id="manualBtn" class="secondary" disabled>Manual placement: OFF</button>
         <select id="manualSurfaceSelect" aria-label="Manual placement surface" disabled>
@@ -119,8 +125,7 @@
     embedded
     renderer="alpha: true; colorManagement: true; physicallyCorrectLights: true; antialias: true"
     webxr="referenceSpaceType: local-floor; requiredFeatures: local-floor; optionalFeatures: hit-test,dom-overlay; overlayElement: #hud"
-    xr-mode-ui="XRMode: ar"
-    vr-mode-ui="enabled: false"
+    xr-mode-ui="enabled: false"
     device-orientation-permission-ui="enabled: false">
     <a-assets timeout="30000">
       <a-asset-item id="trashBinAsset" src="./assets/models/trash-bin/scene.gltf"></a-asset-item>
@@ -178,6 +183,7 @@
     const repositionBtn = $('repositionBtn');
     const swipeSurface = $('swipeSurface');
     const resetBtn = $('resetBtn');
+    const arBtn = $('arBtn');
     const rootEl = $('placementRoot');
     const reticleEl = $('surfaceReticle');
     const paperEl = $('paper'); // First paper entity also serves as the template for later throws.
@@ -234,7 +240,10 @@
     function rangeBand(distance) {
       return CFG.scoreBands.find((band) => distance < band.max) || CFG.scoreBands[CFG.scoreBands.length - 1];
     }
+    let arRequestPending = false;
     function updateHud() {
+      arBtn.textContent = session || scene.is('ar-mode') ? 'Exit AR' : (arRequestPending ? 'Opening AR…' : 'Start AR Camera');
+      arBtn.disabled = arRequestPending;
       scoreValueEl.textContent = String(points);
       basketValueEl.textContent = `${baskets} / ${throws}`;
       repositionBtn.disabled = !placed || active || !session;
@@ -719,6 +728,75 @@
       advancePhysics(now);
     }
 
+    // Explicit AR launch button. Keep the request directly inside the user gesture
+    // (do not await a capability probe first), because browsers require user activation
+    // to start an immersive WebXR session and show the camera feed.
+    arBtn.addEventListener('click', () => {
+      if (arRequestPending) return;
+
+      if (session || scene.is('ar-mode') || (scene.renderer && scene.renderer.xr && scene.renderer.xr.isPresenting)) {
+        arRequestPending = true;
+        updateHud();
+        Promise.resolve(scene.exitVR()).catch((error) => {
+          console.error('Could not exit AR:', error);
+          arRequestPending = false;
+          setStatus(`Could not exit AR: ${error.message || error}`);
+          updateHud();
+        }).finally(() => {
+          arRequestPending = false;
+          updateHud();
+        });
+        return;
+      }
+
+      if (!window.isSecureContext) {
+        setStatus('AR camera could not open because this page is not secure. Open the site over HTTPS (or localhost for development).');
+        return;
+      }
+      if (!navigator.xr || typeof scene.enterAR !== 'function') {
+        setStatus('WebXR AR is unavailable in this browser. Try Google Chrome on a supported ARCore Android phone over HTTPS.');
+        return;
+      }
+
+      arRequestPending = true;
+      updateHud();
+      setStatus('Opening AR camera… accept any browser or AR permission prompt.');
+      try {
+        // Calling this immediately preserves the browser's user-gesture activation.
+        Promise.resolve(scene.enterAR()).then(() => {
+          arRequestPending = false;
+          updateHud();
+          if (session) {
+            setStatus('AR camera started. Scan the floor or table to place the game.');
+          }
+        }).catch((error) => {
+          console.error('Failed to enter AR:', error, error && error.cause);
+          arRequestPending = false;
+          let message = error && error.message ? error.message : String(error);
+          const causeName = error && error.cause && error.cause.name;
+          const errorName = causeName || (error && error.name);
+          if (!window.isSecureContext) {
+            message = 'This page must be opened over HTTPS to use the AR camera.';
+          } else if (!navigator.xr) {
+            message = 'WebXR is unavailable. Open this site in a compatible browser over HTTPS.';
+          } else if (errorName === 'NotAllowedError' || errorName === 'SecurityError') {
+            message = 'AR/camera access was denied. Allow camera access for this site in browser settings, then reload.';
+          } else if (errorName === 'NotSupportedError' || /WebXR not supported|immersive-ar mode not supported|not supported/i.test(message)) {
+            message = 'This device or browser does not support immersive AR. Try Chrome on an ARCore-compatible Android phone with Google Play Services for AR.';
+          } else if (/local-floor|reference space|feature/i.test(message)) {
+            message = 'Your browser could not start the required AR tracking mode. Update Chrome and Google Play Services for AR, then retry.';
+          }
+          setStatus(`Could not open AR camera: ${message}`);
+          updateHud();
+        });
+      } catch (error) {
+        arRequestPending = false;
+        console.error('Could not request AR session:', error);
+        setStatus(`Could not open AR camera: ${error.message || error}. Check HTTPS, browser support, and camera permissions.`);
+        updateHud();
+      }
+    });
+
     placeBtn.addEventListener('click', confirmPlacement);
     manualBtn.addEventListener('click', () => {
       if (!session || active || !placementMode) return;
@@ -796,12 +874,18 @@
     });
 
     scene.addEventListener('loaded', () => {
-      if (!navigator.xr || !navigator.xr.isSessionSupported) {
-        setStatus('This browser does not expose WebXR AR. Try a compatible Android browser/device over HTTPS.');
+      if (!window.isSecureContext) {
+        setStatus('AR camera requires HTTPS. Open this site over HTTPS (localhost is allowed for local development).');
+      } else if (!navigator.xr || !navigator.xr.isSessionSupported) {
+        setStatus('This browser does not expose WebXR. Try Google Chrome on a supported ARCore Android phone over HTTPS.');
       } else {
         navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
-          if (!supported) setStatus('Immersive AR is not supported here. Use an ARCore-compatible Android phone with Chrome over HTTPS.');
-        }).catch(() => {});
+          if (!supported) setStatus('This browser/device does not support immersive AR. Check ARCore compatibility and Google Play Services for AR.');
+          else setStatus('Ready. Tap Start AR Camera to open the live AR camera, then scan for a surface.');
+        }).catch((error) => {
+          console.warn('Could not check immersive AR support:', error);
+          setStatus('Ready to try AR. Tap Start AR Camera; if it fails, check browser support and site permissions.');
+        });
       }
       requestAnimationFrame(frameLoop);
       requestAnimationFrame(watchXRSession);
