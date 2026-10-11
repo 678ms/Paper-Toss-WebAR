@@ -117,7 +117,7 @@
         <button id="repositionBtn" class="secondary" disabled>Reposition</button>
         <button id="resetBtn">Reset score</button>
       </div>
-      <div class="hint" id="hintText">Place the bin. A scrunched-paper model appears at the front of the view. Swipe upward from the paper to throw; diagonal swipes steer left or right. Repositioning clears the paper from the scene.</div>
+      <div class="hint" id="hintText">Place the bin. A scrunched-paper model appears at the front of the view. Aim at the bin and flick upward from the foreground paper. Tilt the phone to adjust the arc; diagonal swipes steer left or right. Repositioning clears the paper from the scene.</div>
     </div>
   </div>
 
@@ -135,13 +135,18 @@
     <a-entity light="type: ambient; color: #ffffff; intensity: 1.25"></a-entity>
     <a-entity light="type: directional; color: #ffffff; intensity: 0.8" position="-1 3 2"></a-entity>
     <!-- An origin at 0,0,0 is important: WebXR supplies the real camera's pose. -->
-    <a-camera id="xrCamera" position="0 0 0" look-controls="enabled: false">
-      <!-- Camera-locked ready paper gives the player a visible launch point at the bottom/front of the screen. -->
-      <a-entity id="readyPaper" position="0.10 -0.17 -0.48" rotation="18 -18 -12" visible="false">
-        <a-entity id="readyPaperModel" gltf-model="#paperAsset" fit-gltf-height="height: 0.075; align: center"></a-entity>
-        <a-dodecahedron id="readyPaperFallback" radius="0.04" material="color: #eeeeee; roughness: 0.92" visible="true"></a-dodecahedron>
-      </a-entity>
-    </a-camera>
+    <a-camera id="xrCamera" position="0 0 0" look-controls="enabled: false"></a-camera>
+
+    <!--
+      The ready paper is scene-space, not parented to the a-camera element.
+      In AR, its pose is updated from each live WebXR viewer pose. The projectile
+      uses this same entity's pose when launched, avoiding a jump to a separate
+      or stale coordinate frame.
+    -->
+    <a-entity id="readyPaper" visible="false">
+      <a-entity id="readyPaperModel" gltf-model="#paperAsset" fit-gltf-height="height: 0.075; align: center"></a-entity>
+      <a-dodecahedron id="readyPaperFallback" radius="0.04" material="color: #eeeeee; roughness: 0.92" visible="true"></a-dodecahedron>
+    </a-entity>
 
     <!-- This follows the latest hit-test result while the user is placing/repositioning. -->
     <a-entity id="surfaceReticle" visible="false">
@@ -229,7 +234,13 @@
     let flightTime = 0;
     let lastFrameTime = null;
     let velocity = { x: 0, y: 0, z: 0 };
+    let spinVelocity = { x: 0, y: 0, z: 0 };
     let throwDistance = 0;
+    // Camera-relative paper offset (metres), recreated in WebXR reference space.
+    const READY_PAPER_OFFSET = new THREE.Vector3(0.07, -0.17, -0.36);
+    const READY_PAPER_ROTATION = new THREE.Quaternion().setFromEuler(
+      new THREE.Euler(THREE.MathUtils.degToRad(18), THREE.MathUtils.degToRad(-18), THREE.MathUtils.degToRad(-12))
+    );
     let latestCameraWorld = null;  // Vector3 in the XR reference space.
     let latestCameraQuat = null;   // Quaternion in the XR reference space.
     let sessionSerial = 0;
@@ -319,6 +330,18 @@
       return rootEl.object3D.worldToLocal(latestCameraWorld.clone());
     }
 
+    // Keep the foreground paper at a stable screen position by recreating its
+    // pose in the same XR reference space used by surface placement. This avoids
+    // relying on a-camera's scene transform, which can differ from the live XR pose.
+    function updateReadyPaperPose() {
+      if (!session || !placed || placementMode || active || !latestCameraWorld || !latestCameraQuat) return;
+      const offsetWorld = READY_PAPER_OFFSET.clone().applyQuaternion(latestCameraQuat);
+      readyPaperEl.object3D.position.copy(latestCameraWorld).add(offsetWorld);
+      readyPaperEl.object3D.quaternion.copy(latestCameraQuat).multiply(READY_PAPER_ROTATION);
+      readyPaperEl.object3D.scale.set(1, 1, 1);
+      readyPaperEl.object3D.updateMatrixWorld(true);
+    }
+
     function currentPlanarDistance() {
       const cam = getCameraLocalPosition();
       if (!cam) return 0;
@@ -331,15 +354,19 @@
       readyPaperEl.setAttribute('visible', Boolean(visible && placed && !placementMode && session));
     }
 
-    // Converts the camera-locked on-screen paper position into the placed game's
-    // local coordinates at the instant of release, so the projectile starts exactly
-    // where the ready paper was rendered in front of the camera.
-    function cameraPointInGameSpace(cameraOffset) {
-      if (!latestCameraWorld || !latestCameraQuat || !placed) return null;
-      const offsetWorld = cameraOffset.clone().applyQuaternion(latestCameraQuat);
-      const worldPoint = latestCameraWorld.clone().add(offsetWorld);
+    // Read the visible preview's actual scene-space pose and convert it to the
+    // bin/game local coordinates. The projectile therefore begins exactly where
+    // the player saw the paper immediately before the swipe.
+    function readyPaperPoseInGameSpace() {
+      if (!placed) return null;
       rootEl.object3D.updateMatrixWorld(true);
-      return rootEl.object3D.worldToLocal(worldPoint);
+      readyPaperEl.object3D.updateMatrixWorld(true);
+      const worldPosition = readyPaperEl.object3D.getWorldPosition(new THREE.Vector3());
+      const worldQuaternion = readyPaperEl.object3D.getWorldQuaternion(new THREE.Quaternion());
+      const localPosition = rootEl.object3D.worldToLocal(worldPosition.clone());
+      const rootWorldQuaternion = rootEl.object3D.getWorldQuaternion(new THREE.Quaternion());
+      const localQuaternion = rootWorldQuaternion.invert().multiply(worldQuaternion);
+      return { position: localPosition, quaternion: localQuaternion };
     }
 
     // Preserve each finished paper as a scene object. The next throw gets a new
@@ -380,6 +407,7 @@
         activePaperFinalized = false;
       }
       velocity = { x: 0, y: 0, z: 0 };
+      spinVelocity = { x: 0, y: 0, z: 0 };
       lastFrameTime = null;
       updateHud();
     }
@@ -396,6 +424,7 @@
       paperEl.object3D.position.set(0, 0.8, 0);
       paperEl.object3D.rotation.set(0, 0, 0);
       velocity = { x: 0, y: 0, z: 0 };
+      spinVelocity = { x: 0, y: 0, z: 0 };
       flightTime = 0;
       lastFrameTime = null;
     }
@@ -430,8 +459,9 @@
       placementMode = false;
       reticleEl.setAttribute('visible', false);
       resetPaper();
+      updateReadyPaperPose();
       setReadyPaperVisible(true);
-      setStatus('Bin placed! The paper is ready at the front of your view. Swipe upward from the paper to throw it toward the bin.');
+      setStatus('Bin placed! The paper is ready at the front of your view. Aim your phone at the bin and flick upward to throw.');
       hintTextEl.innerHTML = 'The scrunched paper at the bottom of the screen is your launch point. Swipe upward over the view to throw; swipe up-left or up-right to steer. Repositioning clears landed paper.';
       updateHud();
     }
@@ -509,6 +539,8 @@
           latestCameraWorld = new THREE.Vector3(p.x, p.y, p.z);
           latestCameraQuat = new THREE.Quaternion(q.x, q.y, q.z, q.w);
         }
+        // Update the on-screen paper using the exact viewer pose supplied by this XR frame.
+        updateReadyPaperPose();
 
         let pose = null;
         if (hitTestSource && !manualMode) {
@@ -605,6 +637,7 @@
       setPaperPosition({ x: CFG.bin.x, y: CFG.bin.insideY, z: CFG.bin.z });
       activePaperFinalized = true; // Keep the scored paper inside the bin.
       velocity = { x: 0, y: 0, z: 0 };
+      spinVelocity = { x: 0, y: 0, z: 0 };
       setReadyPaperVisible(true);
       setStatus(`Basket! +${earned} points from ${throwDistance.toFixed(1)} m. Another paper is ready at the front of the screen.`);
       updateHud();
@@ -619,6 +652,7 @@
       activePaperEl.object3D.rotation.x = (Math.random() - 0.5) * 0.55;
       activePaperEl.object3D.rotation.z = (Math.random() - 0.5) * 0.55;
       velocity = { x: 0, y: 0, z: 0 };
+      spinVelocity = { x: 0, y: 0, z: 0 };
       activePaperFinalized = true;
       setPaperVisible(true);
       setReadyPaperVisible(true);
@@ -641,29 +675,34 @@
 
     function launchPaper(gesture) {
       if (!session || !placed || placementMode || active) return;
-      const cameraLocal = getCameraLocalPosition();
-      if (!cameraLocal || !latestCameraQuat) {
+      if (!latestCameraWorld || !latestCameraQuat) {
         setStatus('Waiting for camera tracking…');
         return;
       }
       if (!gesture || !Number.isFinite(gesture.power)) return;
       preparePaperForNextThrow();
 
-      // The range bonus is frozen at release time. The trash bin is used only
-      // for scoring and collision checks; it never determines the launch vector.
-      throwDistance = Math.hypot(cameraLocal.x - CFG.bin.x, cameraLocal.z - CFG.bin.z);
-
-      // Launch from the camera's current facing direction (yaw), converted into
-      // the placed game's coordinates. Turning the phone changes the throw heading.
-      // Swiping diagonally adds a small left/right component relative to the camera.
-      const cameraForward = cameraAxisInGameSpace(new THREE.Vector3(0, 0, -1));
-      const cameraRight = cameraAxisInGameSpace(new THREE.Vector3(1, 0, 0));
-      if (!cameraForward || !cameraRight) {
-        setStatus('Waiting for camera direction…');
+      // Freeze range at release time. The bin never aims or attracts the paper.
+      const cameraLocal = getCameraLocalPosition();
+      if (!cameraLocal) {
+        setStatus('Waiting for camera tracking…');
         return;
       }
+      throwDistance = Math.hypot(cameraLocal.x - CFG.bin.x, cameraLocal.z - CFG.bin.z);
+
+      // Use the same XR viewer pose that placed the visible preview. The forward
+      // vector sets heading; its downward pitch gently flattens the arc when the
+      // player aims toward a low bin. No bin-seeking or homing vector is applied.
+      const cameraForward = cameraAxisInGameSpace(new THREE.Vector3(0, 0, -1));
+      const cameraRight = cameraAxisInGameSpace(new THREE.Vector3(1, 0, 0));
+      const spawnPose = readyPaperPoseInGameSpace();
+      if (!cameraForward || !cameraRight || !spawnPose) {
+        setStatus('Waiting for the paper and camera pose to synchronize…');
+        return;
+      }
+
+      const pitch = Math.asin(clamp(cameraForward.y, -1, 1));
       const forward = cameraForward.clone();
-      const cameraPitch = Math.asin(clamp(forward.y, -1, 1));
       forward.y = 0;
       if (forward.lengthSq() < 0.0001) forward.set(0, 0, -1);
       forward.normalize();
@@ -673,43 +712,48 @@
       if (right.lengthSq() < 0.0001) right.set(1, 0, 0);
       right.normalize();
 
-      const sideRatio = clamp(gesture.dx / Math.max(gesture.up, 1), -0.72, 0.72);
+      const sideRatio = clamp(gesture.dx / Math.max(gesture.up, 1), -0.65, 0.65);
       const power = clamp(gesture.power, 0.08, 1.0);
-      const horizontalSpeed = 1.0 + power * 5.4;
-      // Start the physical projectile at the exact camera-space offset used by the
-      // visible ready paper. This makes a finger swipe feel like flicking the paper
-      // away from the front of the screen, rather than spawning it beside the bin.
-      const spawn = cameraPointInGameSpace(readyPaperEl.object3D.position.clone());
-      if (!spawn) {
-        setStatus('Waiting for camera pose to place the paper throw…');
-        return;
-      }
+      // Tuned for short Paper Toss throws instead of the previous long, flat overshoot.
+      // Swipe speed increases forward velocity; phone pitch lets the player aim low/high.
+      const horizontalSpeed = 1.15 + power * 3.25;
+      const verticalVelocity = clamp(
+        1.30 + power * 1.15 + clamp(pitch, -0.45, 0.25) * horizontalSpeed * 0.45,
+        0.70,
+        2.60
+      );
+      const sideVelocity = sideRatio * horizontalSpeed * 0.55;
+
+      // Spawn at the exact world-space pose of the preview; do not clamp its height
+      // or reconstruct it from a separate camera offset, both of which caused a pop.
       setReadyPaperVisible(false);
       setPaperPosition({
-        x: spawn.x,
-        y: clamp(spawn.y, 0.22, 1.85),
-        z: spawn.z
+        x: spawnPose.position.x,
+        y: spawnPose.position.y,
+        z: spawnPose.position.z
       });
-      activePaperEl.object3D.rotation.set(0, 0, 0);
+      activePaperEl.object3D.quaternion.copy(spawnPose.quaternion);
 
-      // Camera pitch slightly changes the arc; upward swipe speed determines power.
-      // There is deliberately no homing/aim-assist toward the trash bin.
-      const verticalVelocity = Math.max(0.45,
-        1.5 + power * 1.0 + clamp(cameraPitch, -0.35, 0.35) * horizontalSpeed * 0.45);
-      const sideVelocity = sideRatio * horizontalSpeed * 0.72;
       velocity = {
         x: forward.x * horizontalSpeed + right.x * sideVelocity,
         y: verticalVelocity,
         z: forward.z * horizontalSpeed + right.z * sideVelocity
       };
+      // A paper ball should tumble visibly after the flick, rather than glide like a dot.
+      spinVelocity = {
+        x: 5.0 + power * 9.0,
+        y: sideRatio * 4.0,
+        z: -Math.sign(gesture.dx || 1) * (3.0 + power * 7.0)
+      };
 
       flightTime = 0;
+      lastFrameTime = null; // Keep the projectile visible at its exact launch point for one frame.
       active = true;
       throws += 1;
       setPaperVisible(true);
       const powerPercent = Math.round(power * 100);
       const heading = Math.atan2(forward.x, -forward.z) * 180 / Math.PI;
-      setStatus(`Throw power ${powerPercent}% · camera heading ${Math.round(heading)}° · range bonus ${pointsForDistance(throwDistance)} points if you score.`);
+      setStatus(`Flick ${powerPercent}% · heading ${Math.round(heading)}° · +${pointsForDistance(throwDistance)} points if you score.`);
       updateHud();
     }
 
@@ -726,6 +770,9 @@
       pos.x += velocity.x * dt;
       pos.y += velocity.y * dt;
       pos.z += velocity.z * dt;
+      activePaperEl.object3D.rotation.x += spinVelocity.x * dt;
+      activePaperEl.object3D.rotation.y += spinVelocity.y * dt;
+      activePaperEl.object3D.rotation.z += spinVelocity.z * dt;
 
       const dx = pos.x - CFG.bin.x;
       const dz = pos.z - CFG.bin.z;
@@ -936,7 +983,7 @@
       throws = 0;
       resetPaper();
       setReadyPaperVisible(true);
-      setStatus(placed ? 'Score reset. Swipe upward from the paper at the front of the screen to throw again.' : 'Score reset. Enter AR and place the bin on a detected surface.');
+      setStatus(placed ? 'Score reset. Aim your phone at the bin and flick upward to throw again.' : 'Score reset. Enter AR and place the bin on a detected surface.');
       updateHud();
     });
 
