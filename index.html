@@ -22,25 +22,44 @@
     .stat { background:rgba(255,255,255,.10); border:1px solid rgba(255,255,255,.1); border-radius:10px; padding:6px 9px; min-width:94px; font-size:11px; }
     .stat b { display:block; font-size:15px; letter-spacing:.01em; }
     #distanceLabel { color:#b6e7f8; }
-    .bottom-panel { align-self:center; width:min(580px,100%); display:flex; flex-direction:column; align-items:center; gap:8px; margin-bottom:68px; pointer-events:none; }
-    .controls { display:flex; justify-content:center; flex-wrap:wrap; gap:8px; width:100%; pointer-events:auto; }
+    /* Compact slide-up control drawer: only the supplied menu image stays visible when closed. */
+    #controlsDrawer {
+      position:fixed; z-index:30; left:12px; right:12px;
+      bottom:calc(8px + env(safe-area-inset-bottom));
+      width:min(580px, calc(100% - 24px)); height:min(55dvh, 410px); min-height:220px;
+      margin:0 auto; overflow:hidden; border:1px solid rgba(255,255,255,.18);
+      border-radius:18px; background:rgba(10,18,26,.92); backdrop-filter:blur(13px);
+      box-shadow:0 8px 30px rgba(0,0,0,.36);
+      transform:translateY(calc(100% - 62px));
+      transition:transform .28s cubic-bezier(.2,.8,.2,1);
+      pointer-events:auto; will-change:transform;
+    }
+    #controlsDrawer.is-open { transform:translateY(0); }
+    #drawerHandle { height:62px; display:flex; align-items:center; justify-content:center; border-bottom:1px solid rgba(255,255,255,.12); background:rgba(255,255,255,.035); }
+    #menuToggle { width:58px; height:48px; min-height:48px; padding:4px; display:flex; align-items:center; justify-content:center; background:transparent; border:0; border-radius:12px; box-shadow:none; }
+    #menuToggle img { width:38px; height:38px; object-fit:contain; filter:invert(1); }
+    #menuToggle:focus-visible { outline:2px solid var(--yellow); outline-offset:1px; }
+    .drawer-content { height:calc(100% - 62px); overflow-y:auto; overscroll-behavior:contain; padding:10px 12px calc(14px + env(safe-area-inset-bottom)); opacity:0; visibility:hidden; transition:opacity .16s ease, visibility .16s ease; }
+    #controlsDrawer.is-open .drawer-content { opacity:1; visibility:visible; transition-delay:.06s; }
+    .controls { display:flex; justify-content:center; align-items:center; flex-wrap:wrap; gap:8px; width:100%; pointer-events:auto; }
     button { min-height:44px; padding:10px 14px; border:1px solid rgba(255,255,255,.2); border-radius:13px; font-size:13px; font-weight:800; cursor:pointer; color:#13202b; background:#f8fafc; box-shadow:0 4px 14px rgba(0,0,0,.2); touch-action:manipulation; }
     button.primary { background:var(--yellow); border-color:#ffe29b; }
     button.secondary { background:#dbeafe; }
     button:disabled, select:disabled { opacity:.42; cursor:not-allowed; }
     select { min-height:44px; max-width:175px; padding:9px 10px; border:1px solid rgba(255,255,255,.2); border-radius:13px; font-size:12px; font-weight:750; color:#13202b; background:#e2e8f0; touch-action:manipulation; pointer-events:auto; }
-    .hint { align-self:stretch; padding:8px 10px; border-radius:10px; background:rgba(10,18,26,.70); font-size:11px; line-height:1.35; text-align:center; }
+    .hint { align-self:stretch; margin-top:10px; padding:8px 10px; border-radius:10px; background:rgba(255,255,255,.07); font-size:11px; line-height:1.4; text-align:center; }
     .pill { display:inline-block; padding:2px 6px; margin:0 1px; border-radius:5px; background:rgba(255,255,255,.14); }
     #hud.xr-overlay { pointer-events:none; }
     #hud button, #hud select { pointer-events:auto; }
+    #controlsDrawer button, #controlsDrawer select { pointer-events:auto; }
     /* The stock A-Frame XR button was overlapped by the full-screen swipe layer on some phones.
        Hide it and use our own explicit Start AR Camera button instead. */
     .a-enter-vr, .a-enter-ar, .a-enter-vr-button, .a-enter-ar-button,
     .a-vr-mode-ui, .a-xr-mode-ui { display:none !important; visibility:hidden !important; pointer-events:none !important; }
     #arBtn { min-width: 132px; }
     @media (max-width: 420px) {
-      .bottom-panel { margin-bottom:60px; }
       button { min-height:42px; padding:9px 11px; font-size:12px; }
+      #controlsDrawer { height:min(58dvh, 410px); }
       .top-panel { padding:10px 11px; }
       .stat { min-width:85px; padding:5px 7px; }
     }
@@ -95,7 +114,7 @@
     <div id="swipeSurface" aria-label="Swipe upward to throw the paper"></div>
     <div class="top-panel">
       <div class="brand">PAPER TOSS · WEBAR</div>
-      <div id="status">Tap Start AR Camera, place the bin, then swipe upward from the paper shown at the bottom of the screen. Faster swipes travel farther.</div>
+      <div id="status">Open the bottom menu to start AR and place the bin. Then swipe upward from the paper at the front of your view. Faster swipes travel farther.</div>
       <div id="assetWarning"></div>
       <div class="stats">
         <div class="stat"><span>POINTS</span><b id="scoreValue">0</b></div>
@@ -105,19 +124,26 @@
       <div id="distanceLabel" style="font-size:11px;margin-top:5px;">A longer successful toss earns more points.</div>
     </div>
 
-    <div class="bottom-panel">
-      <div class="controls">
-        <button id="arBtn" class="primary">Start AR Camera</button>
-        <button id="placeBtn" class="primary" disabled>Place the bin</button>
-        <select id="manualSurfaceSelect" aria-label="Manual placement surface" disabled>
-          <option value="0">Floor (estimated)</option>
-          <option value="0.75">Table (~75 cm)</option>
-        </select>
-        <button id="repositionBtn" class="secondary" disabled>Reposition</button>
-        <button id="resetBtn">Reset score</button>
+    <section id="controlsDrawer" aria-label="Game controls">
+      <div id="drawerHandle">
+        <button id="menuToggle" type="button" aria-label="Open game controls" aria-controls="drawerContent" aria-expanded="false" title="Game controls">
+          <img src="./assets/ui/menu-icon.png" alt="" draggable="false">
+        </button>
       </div>
-      <div class="hint" id="hintText">Place the bin. A scrunched-paper model appears at the front of the view. Aim at the bin and flick upward from the foreground paper. Tilt the phone to adjust the arc; diagonal swipes steer left or right. Repositioning clears the paper from the scene.</div>
-    </div>
+      <div class="drawer-content" id="drawerContent" aria-hidden="true" inert>
+        <div class="controls">
+          <button id="arBtn" class="primary">Start AR Camera</button>
+          <button id="placeBtn" class="primary" disabled>Place the bin</button>
+          <select id="manualSurfaceSelect" aria-label="Manual placement surface" disabled>
+            <option value="0">Floor (estimated)</option>
+            <option value="0.75">Table (~75 cm)</option>
+          </select>
+          <button id="repositionBtn" class="secondary" disabled>Reposition</button>
+          <button id="resetBtn">Reset score</button>
+        </div>
+        <div class="hint" id="hintText">Place the bin. A scrunched-paper model appears at the front of the view. Aim at the bin and flick upward from the foreground paper. Tilt the phone to adjust the arc; diagonal swipes steer left or right. Repositioning clears the paper from the scene.</div>
+      </div>
+    </section>
   </div>
 
   <a-scene
@@ -187,6 +213,87 @@
     const swipeSurface = $('swipeSurface');
     const resetBtn = $('resetBtn');
     const arBtn = $('arBtn');
+    const controlsDrawer = $('controlsDrawer');
+    const menuToggle = $('menuToggle');
+    const drawerContent = $('drawerContent');
+
+    // Load the success cue in advance. Web Audio is unlocked on the first user tap,
+    // then can play from the XR frame loop when a basket is registered. HTMLAudio is
+    // kept as a fallback for browsers that cannot decode the buffer through Web Audio.
+    const basketSoundUrl = './assets/audio/yay-sound-fx.mp3';
+    const basketSoundFallback = new Audio(basketSoundUrl);
+    basketSoundFallback.preload = 'auto';
+    basketSoundFallback.volume = 0.9;
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    let basketAudioContext = null;
+    let basketAudioBuffer = null;
+    try {
+      if (AudioContextClass) {
+        basketAudioContext = new AudioContextClass();
+        fetch(basketSoundUrl)
+          .then((response) => {
+            if (!response.ok) throw new Error(`Audio request failed: HTTP ${response.status}`);
+            return response.arrayBuffer();
+          })
+          .then((data) => basketAudioContext.decodeAudioData(data))
+          .then((buffer) => { basketAudioBuffer = buffer; })
+          .catch((error) => console.warn('Could not preload basket sound; HTMLAudio fallback will be used.', error));
+      }
+    } catch (error) {
+      console.warn('Web Audio is unavailable; HTMLAudio fallback will be used.', error);
+    }
+    function unlockBasketAudio() {
+      if (basketAudioContext && basketAudioContext.state === 'suspended') {
+        basketAudioContext.resume().catch((error) => console.warn('Could not unlock basket audio:', error));
+      }
+    }
+    document.addEventListener('pointerdown', unlockBasketAudio, { once: true, passive: true });
+    function playBasketSoundFallback() {
+      try {
+        basketSoundFallback.pause();
+        basketSoundFallback.currentTime = 0;
+        const playback = basketSoundFallback.play();
+        if (playback && typeof playback.catch === 'function') {
+          playback.catch((error) => console.warn('Basket sound could not play. Check audio path and browser audio permission.', error));
+        }
+      } catch (error) {
+        console.warn('Basket sound could not play:', error);
+      }
+    }
+    function playBasketSound() {
+      if (basketAudioContext && basketAudioBuffer) {
+        const playDecoded = () => {
+          try {
+            const source = basketAudioContext.createBufferSource();
+            const gain = basketAudioContext.createGain();
+            source.buffer = basketAudioBuffer;
+            gain.gain.value = 0.9;
+            source.connect(gain);
+            gain.connect(basketAudioContext.destination);
+            source.start(0);
+          } catch (error) {
+            console.warn('Could not play decoded basket sound; using HTMLAudio fallback.', error);
+            playBasketSoundFallback();
+          }
+        };
+        if (basketAudioContext.state === 'running') playDecoded();
+        else basketAudioContext.resume().then(playDecoded).catch(() => playBasketSoundFallback());
+      } else {
+        playBasketSoundFallback();
+      }
+    }
+
+    function setControlsOpen(open) {
+      controlsDrawer.classList.toggle('is-open', open);
+      menuToggle.setAttribute('aria-expanded', String(open));
+      menuToggle.setAttribute('aria-label', open ? 'Close game controls' : 'Open game controls');
+      drawerContent.setAttribute('aria-hidden', String(!open));
+      if (open) drawerContent.removeAttribute('inert');
+      else drawerContent.setAttribute('inert', '');
+    }
+    menuToggle.addEventListener('click', () => {
+      setControlsOpen(!controlsDrawer.classList.contains('is-open'));
+    });
     const rootEl = $('placementRoot');
     const reticleEl = $('surfaceReticle');
     const readyPaperEl = $('readyPaper');
@@ -451,6 +558,8 @@
       setReadyPaperVisible(true);
       setStatus('Bin placed! The paper is ready at the front of your view. Aim your phone at the bin and flick upward to throw.');
       hintTextEl.innerHTML = 'The scrunched paper at the bottom of the screen is your launch point. Swipe upward over the view to throw; swipe up-left or up-right to steer. Repositioning clears landed paper.';
+      // Hide the drawer once the bin is placed, leaving the camera view open for play.
+      setControlsOpen(false);
       updateHud();
     }
 
@@ -568,6 +677,7 @@
 
     function winThrow() {
       const earned = pointsForDistance(throwDistance);
+      playBasketSound();
       points += earned;
       baskets += 1;
       // Preserve a static copy inside the bin, then reuse the same projectile entity.
@@ -957,6 +1067,7 @@
       requestAnimationFrame(frameLoop);
       requestAnimationFrame(watchXRSession);
     }
+    setControlsOpen(false);
     updateHud();
   })();
   </script>
