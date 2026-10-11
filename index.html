@@ -95,7 +95,7 @@
     <div id="swipeSurface" aria-label="Swipe upward to throw the paper"></div>
     <div class="top-panel">
       <div class="brand">PAPER TOSS · WEBAR</div>
-      <div id="status">Tap Start AR Camera, place the game, aim at the bin, then swipe upward to throw. Faster swipes travel farther.</div>
+      <div id="status">Tap Start AR Camera, place the bin, then swipe upward from the paper shown at the bottom of the screen. Faster swipes travel farther.</div>
       <div id="assetWarning"></div>
       <div class="stats">
         <div class="stat"><span>POINTS</span><b id="scoreValue">0</b></div>
@@ -108,7 +108,7 @@
     <div class="bottom-panel">
       <div class="controls">
         <button id="arBtn" class="primary">Start AR Camera</button>
-        <button id="placeBtn" class="primary" disabled>Place game</button>
+        <button id="placeBtn" class="primary" disabled>Place the bin</button>
         <button id="manualBtn" class="secondary" disabled>Manual placement: OFF</button>
         <select id="manualSurfaceSelect" aria-label="Manual placement surface" disabled>
           <option value="0">Floor (estimated)</option>
@@ -117,7 +117,7 @@
         <button id="repositionBtn" class="secondary" disabled>Reposition</button>
         <button id="resetBtn">Reset score</button>
       </div>
-      <div class="hint" id="hintText">Place the game, aim the camera toward the bin, then swipe upward anywhere on the camera view. A faster flick gives the paper more power. Walk farther away for a higher distance bonus.</div>
+      <div class="hint" id="hintText">Place the bin. A scrunched-paper model appears at the front of the view. Swipe upward from the paper to throw; diagonal swipes steer left or right. Repositioning clears the paper from the scene.</div>
     </div>
   </div>
 
@@ -135,7 +135,13 @@
     <a-entity light="type: ambient; color: #ffffff; intensity: 1.25"></a-entity>
     <a-entity light="type: directional; color: #ffffff; intensity: 0.8" position="-1 3 2"></a-entity>
     <!-- An origin at 0,0,0 is important: WebXR supplies the real camera's pose. -->
-    <a-camera id="xrCamera" position="0 0 0" look-controls="enabled: false"></a-camera>
+    <a-camera id="xrCamera" position="0 0 0" look-controls="enabled: false">
+      <!-- Camera-locked ready paper gives the player a visible launch point at the bottom/front of the screen. -->
+      <a-entity id="readyPaper" position="0.10 -0.17 -0.48" rotation="18 -18 -12" visible="false">
+        <a-entity id="readyPaperModel" gltf-model="#paperAsset" fit-gltf-height="height: 0.075; align: center"></a-entity>
+        <a-dodecahedron id="readyPaperFallback" radius="0.04" material="color: #eeeeee; roughness: 0.92" visible="true"></a-dodecahedron>
+      </a-entity>
+    </a-camera>
 
     <!-- This follows the latest hit-test result while the user is placing/repositioning. -->
     <a-entity id="surfaceReticle" visible="false">
@@ -149,12 +155,6 @@
 
       <a-entity id="trashBin" position="0 0 0">
         <a-entity id="trashBinModel" gltf-model="#trashBinAsset" fit-gltf-height="height: 0.32; align: ground"></a-entity>
-        <!-- Simple fallback remains visible until the supplied glTF and its sidecar files load. -->
-        <a-entity id="binFallback">
-          <a-cylinder position="0 0.16 0" radius="0.14" height="0.32" geometry="primitive: cylinder; radius: 0.14; height: 0.32; openEnded: true" material="color: #52606d; metalness: 0.25; roughness: 0.55"></a-cylinder>
-          <a-torus position="0 0.31 0" rotation="90 0 0" radius="0.125" radius-tubular="0.012" material="color: #263341; metalness: 0.2; roughness: 0.6"></a-torus>
-          <a-circle position="0 0.295 0" rotation="-90 0 0" radius="0.105" material="color: #101820; shader: flat; side: double; roughness: 1"></a-circle>
-        </a-entity>
       </a-entity>
 
       <a-entity id="paper" visible="false" position="0 0.8 0">
@@ -186,6 +186,9 @@
     const arBtn = $('arBtn');
     const rootEl = $('placementRoot');
     const reticleEl = $('surfaceReticle');
+    const readyPaperEl = $('readyPaper');
+    const readyPaperModelEl = $('readyPaperModel');
+    const readyPaperFallbackEl = $('readyPaperFallback');
     const paperEl = $('paper'); // First paper entity also serves as the template for later throws.
     let activePaperEl = paperEl;
     let activePaperFinalized = false;
@@ -248,7 +251,7 @@
       basketValueEl.textContent = `${baskets} / ${throws}`;
       repositionBtn.disabled = !placed || active || !session;
       placeBtn.disabled = !session || !hasSurface || active || !placementMode;
-      placeBtn.textContent = placed && placementMode ? 'Confirm position' : 'Place game';
+      placeBtn.textContent = placed && placementMode ? 'Confirm bin position' : 'Place the bin';
       manualBtn.disabled = !session || active || !placementMode;
       manualBtn.textContent = `Manual placement: ${manualMode ? 'ON' : 'OFF'}`;
       manualBtn.classList.toggle('primary', manualMode);
@@ -264,7 +267,7 @@
         }
       } else {
         distanceValueEl.textContent = placed ? '—' : '—';
-        distanceLabelEl.textContent = placed ? 'Move around to change the distance bonus.' : 'Place the game on a detected surface to begin.';
+        distanceLabelEl.textContent = placed ? 'Move around to change the distance bonus.' : 'Place the bin on a floor or tabletop to begin.';
       }
     }
 
@@ -324,6 +327,20 @@
 
     function setPaperVisible(visible) { activePaperEl.setAttribute('visible', visible); }
     function setPaperPosition(p) { activePaperEl.object3D.position.set(p.x, p.y, p.z); }
+    function setReadyPaperVisible(visible) {
+      readyPaperEl.setAttribute('visible', Boolean(visible && placed && !placementMode && session));
+    }
+
+    // Converts the camera-locked on-screen paper position into the placed game's
+    // local coordinates at the instant of release, so the projectile starts exactly
+    // where the ready paper was rendered in front of the camera.
+    function cameraPointInGameSpace(cameraOffset) {
+      if (!latestCameraWorld || !latestCameraQuat || !placed) return null;
+      const offsetWorld = cameraOffset.clone().applyQuaternion(latestCameraQuat);
+      const worldPoint = latestCameraWorld.clone().add(offsetWorld);
+      rootEl.object3D.updateMatrixWorld(true);
+      return rootEl.object3D.worldToLocal(worldPoint);
+    }
 
     // Preserve each finished paper as a scene object. The next throw gets a new
     // entity cloned from the original markup, so a miss can remain on the ground.
@@ -367,20 +384,39 @@
       updateHud();
     }
 
+    function clearPaperLitter() {
+      setReadyPaperVisible(false);
+      // Repositioning starts a fresh round: remove all landed paper from the floor
+      // and bin, including cloned instances from earlier throws.
+      active = false;
+      document.querySelectorAll('.paper-instance').forEach((entity) => entity.remove());
+      activePaperEl = paperEl;
+      activePaperFinalized = false;
+      paperEl.setAttribute('visible', false);
+      paperEl.object3D.position.set(0, 0.8, 0);
+      paperEl.object3D.rotation.set(0, 0, 0);
+      velocity = { x: 0, y: 0, z: 0 };
+      flightTime = 0;
+      lastFrameTime = null;
+    }
+
     function enterPlacementMode() {
       if (!session) {
         setStatus('Enter AR first, then scan for a floor or table.');
         return;
       }
       if (active) return;
+      // Clear accumulated miss litter whenever the player chooses to reposition.
+      clearPaperLitter();
       placementMode = true;
       hasSurface = false;
       reticleEl.setAttribute('visible', false);
+      setReadyPaperVisible(false);
       setStatus(manualMode
-        ? 'Manual mode: aim down at the floor/table until the yellow ring appears, then confirm.'
-        : (placed ? 'Reposition mode: move the phone to a detected surface, then confirm.' : 'Scan slowly until the yellow ring locks onto a floor or tabletop. If it never appears, switch Manual placement ON.'));
+        ? 'Manual mode: aim down at the floor/table until the yellow ring appears, then confirm the bin position.'
+        : (placed ? 'Reposition mode: move the ring to a new surface, then confirm the bin position.' : 'Scan slowly until the yellow ring locks onto a floor or tabletop. If it never appears, switch Manual placement ON.'));
       hintTextEl.innerHTML = manualMode
-        ? 'Manual fallback uses an estimated horizontal plane. Aim the center of the camera down at the chosen surface and tap <span class="pill">Confirm position</span>.'
+        ? 'Manual fallback uses an estimated horizontal plane. Aim the center of the camera down at the chosen surface and tap <span class="pill">Confirm bin position</span>.'
         : 'Aim at a broad, well-lit surface with visible texture. If no ring appears after several seconds, turn on <span class="pill">Manual placement</span> and aim down at the target surface.';
       updateHud();
     }
@@ -394,21 +430,22 @@
       placementMode = false;
       reticleEl.setAttribute('visible', false);
       resetPaper();
-      setStatus('Game placed! Move backward or forward to change the range bonus, aim toward the bin and swipe upward.');
-      hintTextEl.innerHTML = 'Aim the camera toward the bin, then swipe upward. Swipe diagonally to steer left/right; faster flicks travel farther. Missed papers remain on the ground.';
+      setReadyPaperVisible(true);
+      setStatus('Bin placed! The paper is ready at the front of your view. Swipe upward from the paper to throw it toward the bin.');
+      hintTextEl.innerHTML = 'The scrunched paper at the bottom of the screen is your launch point. Swipe upward over the view to throw; swipe up-left or up-right to steer. Repositioning clears landed paper.';
       updateHud();
     }
 
     function modelLoaded(modelId, fallbackId) {
       loadedModels.add(modelId);
-      $(fallbackId).setAttribute('visible', false);
+      if (fallbackId && $(fallbackId)) $(fallbackId).setAttribute('visible', false);
       if (failedModels.has(modelId)) failedModels.delete(modelId);
       updateAssetWarning();
     }
 
     function modelFailed(modelId, fallbackId) {
       failedModels.add(modelId);
-      $(fallbackId).setAttribute('visible', true);
+      if (fallbackId && $(fallbackId)) $(fallbackId).setAttribute('visible', true);
       updateAssetWarning();
     }
 
@@ -419,10 +456,12 @@
         assetWarningEl.textContent = '';
       }
     }
-    $('trashBinModel').addEventListener('model-loaded', () => modelLoaded('trashBinModel', 'binFallback'));
+    $('trashBinModel').addEventListener('model-loaded', () => modelLoaded('trashBinModel', null));
     $('paperModel').addEventListener('model-loaded', () => modelLoaded('paperModel', 'paperFallback'));
-    $('trashBinModel').addEventListener('model-error', () => modelFailed('trashBinModel', 'binFallback'));
+    $('trashBinModel').addEventListener('model-error', () => modelFailed('trashBinModel', null));
     $('paperModel').addEventListener('model-error', () => modelFailed('paperModel', 'paperFallback'));
+    readyPaperModelEl.addEventListener('model-loaded', () => readyPaperFallbackEl.setAttribute('visible', false));
+    readyPaperModelEl.addEventListener('model-error', () => readyPaperFallbackEl.setAttribute('visible', true));
 
     async function startHitTesting(xrSession) {
       const thisSerial = ++sessionSerial;
@@ -434,7 +473,7 @@
       latestCameraWorld = null;
       latestCameraQuat = null;
       hitTestUnavailable = false;
-      setStatus('AR is active. Scan for a surface; manual placement is available if the ring does not appear.');
+      setStatus('AR is active. Scan for a surface and place the bin; manual placement is available if the ring does not appear.');
       updateHud();
 
       // Automatic hit testing is an enhancement, not a hard requirement. If it is
@@ -454,7 +493,7 @@
         console.warn('WebXR hit-test unavailable; manual placement remains available:', error);
         hitTestSource = null;
         hitTestUnavailable = true;
-        setStatus('Automatic surface detection is unavailable. Turn on Manual placement, aim down at the floor/table, then place the game.');
+        setStatus('Automatic surface detection is unavailable. Turn on Manual placement, aim down at the floor/table, then place the bin.');
       }
 
       const onXRFrame = (time, frame) => {
@@ -487,7 +526,7 @@
           copyPoseMatrix(currentHitMatrix, reticleEl.object3D);
           hasSurface = true;
           reticleEl.setAttribute('visible', placementMode);
-          if (placementMode) setStatus(placed ? 'Surface found. Move the ring to the new location and confirm.' : 'Surface found! Tap Place game to set up Paper Toss.');
+          if (placementMode) setStatus(placed ? 'Surface found. Move the ring to the new location and confirm the bin position.' : 'Surface found! Tap Place the bin to set up Paper Toss.');
         } else if (placementMode && manualMode) {
           const manualMatrix = getManualPlacementMatrix();
           if (manualMatrix) {
@@ -495,13 +534,13 @@
             copyPoseMatrix(currentHitMatrix, reticleEl.object3D);
             hasSurface = true;
             reticleEl.setAttribute('visible', true);
-            setStatus(`Manual ${manualSurfaceY === 0 ? 'floor' : 'table'} position ready. Tap ${placed ? 'Confirm position' : 'Place game'}.`);
+            setStatus(`Manual ${manualSurfaceY === 0 ? 'floor' : 'table'} position ready. Tap ${placed ? 'Confirm bin position' : 'Place the bin'}.`);
           } else {
             currentHitMatrix = null;
             hasSurface = false;
             reticleEl.setAttribute('visible', false);
             const surfaceName = manualSurfaceY === 0 ? 'floor' : 'tabletop';
-            setStatus(`Manual mode: aim the center of the camera down at the ${surfaceName}. Keep the target plane in view.`);
+            setStatus(`Manual mode: aim the center of the camera down at the ${surfaceName}. Keep the target plane in view, then place the bin.`);
           }
         } else {
           currentHitMatrix = null;
@@ -532,12 +571,13 @@
       latestCameraWorld = null;
       latestCameraQuat = null;
       reticleEl.setAttribute('visible', false);
+      setReadyPaperVisible(false);
       if (active) resetPaper();
       // A new immersive session may use a new reference-space origin; require a fresh placement.
       placed = false;
       placementMode = true;
       rootEl.setAttribute('visible', false);
-      setStatus('AR ended. Tap Enter AR and place the game again to continue.');
+      setStatus('AR ended. Tap Start AR Camera and place the bin again to continue.');
       updateHud();
     }
 
@@ -565,7 +605,8 @@
       setPaperPosition({ x: CFG.bin.x, y: CFG.bin.insideY, z: CFG.bin.z });
       activePaperFinalized = true; // Keep the scored paper inside the bin.
       velocity = { x: 0, y: 0, z: 0 };
-      setStatus(`Basket! +${earned} points from ${throwDistance.toFixed(1)} m. Swipe again!`);
+      setReadyPaperVisible(true);
+      setStatus(`Basket! +${earned} points from ${throwDistance.toFixed(1)} m. Another paper is ready at the front of the screen.`);
       updateHud();
     }
 
@@ -580,8 +621,22 @@
       velocity = { x: 0, y: 0, z: 0 };
       activePaperFinalized = true;
       setPaperVisible(true);
-      setStatus(`${message} The paper stays where it landed.`);
+      setReadyPaperVisible(true);
+      setStatus(`${message} The paper stays where it landed. Another paper is ready at the front of the screen.`);
       updateHud();
+    }
+
+    // Convert a camera-space axis into the game root's local coordinates by
+    // transforming two points. This accounts for the placed game's full world
+    // transform and avoids mixing XR reference-space vectors with bin-local axes.
+    function cameraAxisInGameSpace(cameraAxis) {
+      if (!latestCameraWorld || !latestCameraQuat) return null;
+      rootEl.object3D.updateMatrixWorld(true);
+      const originWorld = latestCameraWorld.clone();
+      const axisWorld = cameraAxis.clone().applyQuaternion(latestCameraQuat).normalize();
+      const originLocal = rootEl.object3D.worldToLocal(originWorld.clone());
+      const endpointLocal = rootEl.object3D.worldToLocal(originWorld.clone().add(axisWorld));
+      return endpointLocal.sub(originLocal).normalize();
     }
 
     function launchPaper(gesture) {
@@ -594,43 +649,53 @@
       if (!gesture || !Number.isFinite(gesture.power)) return;
       preparePaperForNextThrow();
 
-      // Save camera-to-bin distance at release time; walking during flight cannot
-      // change the range bonus for this throw.
+      // The range bonus is frozen at release time. The trash bin is used only
+      // for scoring and collision checks; it never determines the launch vector.
       throwDistance = Math.hypot(cameraLocal.x - CFG.bin.x, cameraLocal.z - CFG.bin.z);
 
-      // Aim along the camera's horizontal forward direction. The left/right part
-      // of a diagonal swipe adds a small side component. Swipe UP is required.
-      const inverseRootRotation = rootEl.object3D.quaternion.clone().invert();
-      const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(latestCameraQuat);
+      // Launch from the camera's current facing direction (yaw), converted into
+      // the placed game's coordinates. Turning the phone changes the throw heading.
+      // Swiping diagonally adds a small left/right component relative to the camera.
+      const cameraForward = cameraAxisInGameSpace(new THREE.Vector3(0, 0, -1));
+      const cameraRight = cameraAxisInGameSpace(new THREE.Vector3(1, 0, 0));
+      if (!cameraForward || !cameraRight) {
+        setStatus('Waiting for camera direction…');
+        return;
+      }
+      const forward = cameraForward.clone();
+      const cameraPitch = Math.asin(clamp(forward.y, -1, 1));
       forward.y = 0;
       if (forward.lengthSq() < 0.0001) forward.set(0, 0, -1);
-      forward.normalize().applyQuaternion(inverseRootRotation);
-      forward.y = 0;
       forward.normalize();
 
-      const right = new THREE.Vector3(1, 0, 0).applyQuaternion(latestCameraQuat);
+      const right = cameraRight.clone();
       right.y = 0;
       if (right.lengthSq() < 0.0001) right.set(1, 0, 0);
-      right.normalize().applyQuaternion(inverseRootRotation);
-      right.y = 0;
       right.normalize();
 
-      // Swipe X adds a sideways velocity while the phone's horizontal aim still
-      // determines the main throw direction. Positive dx = screen-right; negative
-      // dx = screen-left. Clamp it so diagonal swipes steer, rather than turn sideways.
       const sideRatio = clamp(gesture.dx / Math.max(gesture.up, 1), -0.72, 0.72);
-      const spawn = {
-        x: cameraLocal.x + forward.x * 0.18,
-        y: clamp(cameraLocal.y - 0.22, 0.22, 1.75),
-        z: cameraLocal.z + forward.z * 0.18
-      };
-      setPaperPosition(spawn);
-      activePaperEl.object3D.rotation.set(0, 0, 0);
-
-      // Faster finger movement produces more forward speed and a modestly higher arc.
       const power = clamp(gesture.power, 0.08, 1.0);
       const horizontalSpeed = 1.0 + power * 5.4;
-      const verticalVelocity = 1.5 + power * 1.0;
+      // Start the physical projectile at the exact camera-space offset used by the
+      // visible ready paper. This makes a finger swipe feel like flicking the paper
+      // away from the front of the screen, rather than spawning it beside the bin.
+      const spawn = cameraPointInGameSpace(readyPaperEl.object3D.position.clone());
+      if (!spawn) {
+        setStatus('Waiting for camera pose to place the paper throw…');
+        return;
+      }
+      setReadyPaperVisible(false);
+      setPaperPosition({
+        x: spawn.x,
+        y: clamp(spawn.y, 0.22, 1.85),
+        z: spawn.z
+      });
+      activePaperEl.object3D.rotation.set(0, 0, 0);
+
+      // Camera pitch slightly changes the arc; upward swipe speed determines power.
+      // There is deliberately no homing/aim-assist toward the trash bin.
+      const verticalVelocity = Math.max(0.45,
+        1.5 + power * 1.0 + clamp(cameraPitch, -0.35, 0.35) * horizontalSpeed * 0.45);
       const sideVelocity = sideRatio * horizontalSpeed * 0.72;
       velocity = {
         x: forward.x * horizontalSpeed + right.x * sideVelocity,
@@ -643,7 +708,8 @@
       throws += 1;
       setPaperVisible(true);
       const powerPercent = Math.round(power * 100);
-      setStatus(`Throw power ${powerPercent}% · range bonus ${pointsForDistance(throwDistance)} points if you score. Aim carefully!`);
+      const heading = Math.atan2(forward.x, -forward.z) * 180 / Math.PI;
+      setStatus(`Throw power ${powerPercent}% · camera heading ${Math.round(heading)}° · range bonus ${pointsForDistance(throwDistance)} points if you score.`);
       updateHud();
     }
 
@@ -767,7 +833,7 @@
           arRequestPending = false;
           updateHud();
           if (session) {
-            setStatus('AR camera started. Scan the floor or table to place the game.');
+            setStatus('AR camera started. Scan the floor or table, then tap Place the bin.');
           }
         }).catch((error) => {
           console.error('Failed to enter AR:', error, error && error.cause);
@@ -869,7 +935,8 @@
       baskets = 0;
       throws = 0;
       resetPaper();
-      setStatus(placed ? 'Score reset. Aim at the bin and swipe upward to throw again.' : 'Score reset. Enter AR and place the game on a detected surface.');
+      setReadyPaperVisible(true);
+      setStatus(placed ? 'Score reset. Swipe upward from the paper at the front of the screen to throw again.' : 'Score reset. Enter AR and place the bin on a detected surface.');
       updateHud();
     });
 
@@ -881,7 +948,7 @@
       } else {
         navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
           if (!supported) setStatus('This browser/device does not support immersive AR. Check ARCore compatibility and Google Play Services for AR.');
-          else setStatus('Ready. Tap Start AR Camera to open the live AR camera, then scan for a surface.');
+          else setStatus('Ready. Tap Start AR Camera, scan for a surface, and tap Place the bin.');
         }).catch((error) => {
           console.warn('Could not check immersive AR support:', error);
           setStatus('Ready to try AR. Tap Start AR Camera; if it fails, check browser support and site permissions.');
