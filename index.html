@@ -107,6 +107,49 @@
         this.done = true;
       }
     });
+
+    // Keep the crumpled-paper texture visible regardless of AR lighting or tumble angle.
+    // The source is a matte paper ball, so an unlit material is more reliable than a
+    // metallic/PBR response on mobile GPUs and when the projectile rotates in flight.
+    AFRAME.registerComponent('paper-unlit-material', {
+      init: function () {
+        this.applyMaterial = this.applyMaterial.bind(this);
+        this.el.addEventListener('model-loaded', this.applyMaterial);
+        if (this.el.getObject3D('mesh')) this.applyMaterial();
+      },
+      applyMaterial: function () {
+        const root = this.el.getObject3D('mesh');
+        if (!root) return;
+        root.traverse((node) => {
+          if (!node.isMesh || !node.material) return;
+          const replace = (oldMat) => {
+            if (!oldMat) return oldMat;
+            // Keep the original base-colour texture and factors, but remove lighting
+            // dependence that can make the model look black as it rotates.
+            const color = oldMat.color ? oldMat.color.clone() : new THREE.Color(0xffffff);
+            const mat = new THREE.MeshBasicMaterial({
+              map: oldMat.map || null,
+              color,
+              side: THREE.DoubleSide,
+              transparent: !!oldMat.transparent,
+              opacity: oldMat.opacity == null ? 1 : oldMat.opacity,
+              alphaMap: oldMat.alphaMap || null,
+              vertexColors: !!oldMat.vertexColors,
+              toneMapped: false
+            });
+            mat.name = (oldMat.name || 'Paper') + '_Unlit';
+            return mat;
+          };
+          node.material = Array.isArray(node.material)
+            ? node.material.map(replace)
+            : replace(node.material);
+          node.material.needsUpdate = true;
+        });
+      },
+      remove: function () {
+        this.el.removeEventListener('model-loaded', this.applyMaterial);
+      }
+    });
   </script>
 </head>
 <body>
@@ -148,7 +191,7 @@
 
   <a-scene
     embedded
-    renderer="alpha: true; colorManagement: true; physicallyCorrectLights: true; antialias: true"
+    renderer="alpha: true; colorManagement: true; physicallyCorrectLights: true; precision: medium; antialias: true"
     webxr="referenceSpaceType: local-floor; requiredFeatures: local-floor; optionalFeatures: dom-overlay; overlayElement: #hud"
     xr-mode-ui="enabled: false"
     device-orientation-permission-ui="enabled: false">
@@ -169,7 +212,7 @@
       or stale coordinate frame.
     -->
     <a-entity id="readyPaper" visible="false">
-      <a-entity id="readyPaperModel" gltf-model="#paperAsset" fit-gltf-height="height: 0.075; align: center"></a-entity>
+      <a-entity id="readyPaperModel" gltf-model="#paperAsset" fit-gltf-height="height: 0.075; align: center" paper-unlit-material></a-entity>
       <a-dodecahedron id="readyPaperFallback" radius="0.04" material="color: #eeeeee; roughness: 0.92" visible="true"></a-dodecahedron>
     </a-entity>
 
@@ -188,7 +231,7 @@
       </a-entity>
 
       <a-entity id="paper" visible="false" position="0 0.8 0">
-        <a-entity id="paperModel" gltf-model="#paperAsset" fit-gltf-height="height: 0.075; align: center"></a-entity>
+        <a-entity id="paperModel" gltf-model="#paperAsset" fit-gltf-height="height: 0.075; align: center" paper-unlit-material></a-entity>
         <a-dodecahedron id="paperFallback" radius="0.04" material="color: #eeeeee; roughness: 0.92"></a-dodecahedron>
       </a-entity>
     </a-entity>
