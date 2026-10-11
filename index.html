@@ -25,7 +25,8 @@
     button { min-height:44px; padding:10px 14px; border:1px solid rgba(255,255,255,.2); border-radius:13px; font-size:13px; font-weight:800; cursor:pointer; color:#13202b; background:#f8fafc; box-shadow:0 4px 14px rgba(0,0,0,.2); touch-action:manipulation; }
     button.primary { background:var(--yellow); border-color:#ffe29b; }
     button.secondary { background:#dbeafe; }
-    button:disabled { opacity:.42; cursor:not-allowed; }
+    button:disabled, select:disabled { opacity:.42; cursor:not-allowed; }
+    select { min-height:44px; max-width:175px; padding:9px 10px; border:1px solid rgba(255,255,255,.2); border-radius:13px; font-size:12px; font-weight:750; color:#13202b; background:#e2e8f0; touch-action:manipulation; pointer-events:auto; }
     .hint { align-self:stretch; padding:8px 10px; border-radius:10px; background:rgba(10,18,26,.70); font-size:11px; line-height:1.35; text-align:center; }
     .pill { display:inline-block; padding:2px 6px; margin:0 1px; border-radius:5px; background:rgba(255,255,255,.14); }
     #hud.xr-overlay { pointer-events:none; }
@@ -86,7 +87,7 @@
   <div id="hud">
     <div class="top-panel">
       <div class="brand">PAPER TOSS · WEBAR</div>
-      <div id="status">Tap <b>Enter AR</b>, then slowly point your camera at a floor or tabletop.</div>
+      <div id="status">Tap <b>Enter AR</b>, scan for a surface, or enable manual placement if detection fails.</div>
       <div id="assetWarning"></div>
       <div class="stats">
         <div class="stat"><span>POINTS</span><b id="scoreValue">0</b></div>
@@ -99,19 +100,24 @@
     <div class="bottom-panel">
       <div class="controls">
         <button id="placeBtn" class="primary" disabled>Place game</button>
+        <button id="manualBtn" class="secondary" disabled>Manual placement: OFF</button>
+        <select id="manualSurfaceSelect" aria-label="Manual placement surface" disabled>
+          <option value="0">Floor (estimated)</option>
+          <option value="0.75">Table (~75 cm)</option>
+        </select>
         <button id="repositionBtn" class="secondary" disabled>Reposition</button>
         <button id="tossBtn" disabled>Toss paper</button>
         <button id="fanBtn" disabled>Fan: ON</button>
         <button id="resetBtn">Reset score</button>
       </div>
-      <div class="hint" id="hintText">Move your phone slowly until a surface ring appears. Aim the camera toward the bin and tap <span class="pill">Toss paper</span>. Keep the bin visible for best tracking.</div>
+      <div class="hint" id="hintText">Scan slowly for a surface ring. If none appears, enable Manual placement and aim down at the floor/table. Aim toward the bin and tap <span class="pill">Toss paper</span>.</div>
     </div>
   </div>
 
   <a-scene
     embedded
     renderer="alpha: true; colorManagement: true; physicallyCorrectLights: true; antialias: true"
-    webxr="referenceSpaceType: local-floor; requiredFeatures: hit-test,local-floor; optionalFeatures: dom-overlay; overlayElement: #hud"
+    webxr="referenceSpaceType: local-floor; requiredFeatures: local-floor; optionalFeatures: hit-test,dom-overlay; overlayElement: #hud"
     xr-mode-ui="XRMode: ar"
     vr-mode-ui="enabled: false"
     device-orientation-permission-ui="enabled: false">
@@ -178,6 +184,8 @@
     const distanceLabelEl = $('distanceLabel');
     const hintTextEl = $('hintText');
     const placeBtn = $('placeBtn');
+    const manualBtn = $('manualBtn');
+    const manualSurfaceSelect = $('manualSurfaceSelect');
     const repositionBtn = $('repositionBtn');
     const tossBtn = $('tossBtn');
     const fanBtn = $('fanBtn');
@@ -211,6 +219,9 @@
     let hasSurface = false;
     let placed = false;
     let placementMode = true;
+    let manualMode = false;
+    let manualSurfaceY = 0; // In local-floor coordinates: 0=floor, ~0.75m=tabletop.
+    let hitTestUnavailable = false;
     let fanOn = true;
     let active = false;
     let points = 0;
@@ -242,6 +253,11 @@
       repositionBtn.disabled = !placed || active || !session;
       placeBtn.disabled = !session || !hasSurface || active || !placementMode;
       placeBtn.textContent = placed && placementMode ? 'Confirm position' : 'Place game';
+      manualBtn.disabled = !session || active || !placementMode;
+      manualBtn.textContent = `Manual placement: ${manualMode ? 'ON' : 'OFF'}`;
+      manualBtn.classList.toggle('primary', manualMode);
+      manualBtn.classList.toggle('secondary', !manualMode);
+      manualSurfaceSelect.disabled = !session || active || !placementMode;
       if (latestCameraWorld && placed) {
         const local = getCameraLocalPosition();
         if (local) {
@@ -254,6 +270,27 @@
         distanceValueEl.textContent = placed ? '—' : '—';
         distanceLabelEl.textContent = placed ? 'Move around to change your throwing distance.' : 'Place the game on a detected surface to begin.';
       }
+    }
+
+    // Manual fallback: cast the centre-camera ray onto an estimated horizontal
+    // plane in local-floor coordinates. This does not detect a real table; choose
+    // a typical table height in the selector and adjust it for your environment.
+    function getManualPlacementMatrix() {
+      if (!latestCameraWorld || !latestCameraQuat) return null;
+      const direction = new THREE.Vector3(0, 0, -1).applyQuaternion(latestCameraQuat).normalize();
+      if (direction.y > -0.08) return null; // User must aim down toward the surface.
+      const t = (manualSurfaceY - latestCameraWorld.y) / direction.y;
+      if (!Number.isFinite(t) || t < 0.35 || t > 5.0) return null;
+
+      const position = latestCameraWorld.clone().addScaledVector(direction, t);
+      position.y = manualSurfaceY;
+      const horizontal = new THREE.Vector3(direction.x, 0, direction.z);
+      if (horizontal.lengthSq() < 0.0001) return null;
+      horizontal.normalize();
+      // Local -Z points along the camera's horizontal viewing direction.
+      const yaw = Math.atan2(horizontal.x, -horizontal.z);
+      const quaternion = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+      return Array.from(new THREE.Matrix4().compose(position, quaternion, new THREE.Vector3(1, 1, 1)).elements);
     }
 
     function copyPoseMatrix(matrixArray, targetObj) {
@@ -309,8 +346,12 @@
       placementMode = true;
       hasSurface = false;
       reticleEl.setAttribute('visible', false);
-      setStatus(placed ? 'Reposition mode: move the phone to a detected surface, then confirm.' : 'Scan slowly until the yellow ring locks onto a floor or tabletop.');
-      hintTextEl.innerHTML = 'Aim at a broad, well-lit surface with visible texture. When the yellow ring appears, tap <span class="pill">Confirm position</span>.';
+      setStatus(manualMode
+        ? 'Manual mode: aim down at the floor/table until the yellow ring appears, then confirm.'
+        : (placed ? 'Reposition mode: move the phone to a detected surface, then confirm.' : 'Scan slowly until the yellow ring locks onto a floor or tabletop. If it never appears, switch Manual placement ON.'));
+      hintTextEl.innerHTML = manualMode
+        ? 'Manual fallback uses an estimated horizontal plane. Aim the center of the camera down at the chosen surface and tap <span class="pill">Confirm position</span>.'
+        : 'Aim at a broad, well-lit surface with visible texture. If no ring appears after several seconds, turn on <span class="pill">Manual placement</span> and aim down at the target surface.';
       updateHud();
     }
 
@@ -364,10 +405,16 @@
       hasSurface = false;
       latestCameraWorld = null;
       latestCameraQuat = null;
-      setStatus('AR is active. Point the camera at a floor or tabletop and move slowly.');
+      hitTestUnavailable = false;
+      setStatus('AR is active. Scan for a surface; manual placement is available if the ring does not appear.');
       updateHud();
 
+      // Automatic hit testing is an enhancement, not a hard requirement. If it is
+      // unavailable or produces no results, the manual floor/table plane still works.
       try {
+        if (typeof xrSession.requestHitTestSource !== 'function') {
+          throw new Error('requestHitTestSource is not available in this browser session');
+        }
         const viewerSpace = await xrSession.requestReferenceSpace('viewer');
         const source = await xrSession.requestHitTestSource({ space: viewerSpace });
         if (session !== xrSession || thisSerial !== sessionSerial) {
@@ -376,9 +423,10 @@
         }
         hitTestSource = source;
       } catch (error) {
-        console.error('Could not create WebXR hit-test source:', error);
-        setStatus('Surface detection could not start. Check that this browser/device supports WebXR hit-test.');
-        return;
+        console.warn('WebXR hit-test unavailable; manual placement remains available:', error);
+        hitTestSource = null;
+        hitTestUnavailable = true;
+        setStatus('Automatic surface detection is unavailable. Turn on Manual placement, aim down at the floor/table, then place the game.');
       }
 
       const onXRFrame = (time, frame) => {
@@ -396,9 +444,15 @@
         }
 
         let pose = null;
-        if (hitTestSource) {
-          const results = frame.getHitTestResults(hitTestSource);
-          if (results && results.length) pose = results[0].getPose(refSpace);
+        if (hitTestSource && !manualMode) {
+          try {
+            const results = frame.getHitTestResults(hitTestSource);
+            if (results && results.length) pose = results[0].getPose(refSpace);
+          } catch (error) {
+            console.warn('Hit-test frame query failed:', error);
+            hitTestUnavailable = true;
+            hitTestSource = null;
+          }
         }
         if (pose) {
           currentHitMatrix = Array.from(pose.transform.matrix);
@@ -406,11 +460,30 @@
           hasSurface = true;
           reticleEl.setAttribute('visible', placementMode);
           if (placementMode) setStatus(placed ? 'Surface found. Move the ring to the new location and confirm.' : 'Surface found! Tap Place game to set up Paper Toss.');
+        } else if (placementMode && manualMode) {
+          const manualMatrix = getManualPlacementMatrix();
+          if (manualMatrix) {
+            currentHitMatrix = manualMatrix;
+            copyPoseMatrix(currentHitMatrix, reticleEl.object3D);
+            hasSurface = true;
+            reticleEl.setAttribute('visible', true);
+            setStatus(`Manual ${manualSurfaceY === 0 ? 'floor' : 'table'} position ready. Tap ${placed ? 'Confirm position' : 'Place game'}.`);
+          } else {
+            currentHitMatrix = null;
+            hasSurface = false;
+            reticleEl.setAttribute('visible', false);
+            const surfaceName = manualSurfaceY === 0 ? 'floor' : 'tabletop';
+            setStatus(`Manual mode: aim the center of the camera down at the ${surfaceName}. Keep the target plane in view.`);
+          }
         } else {
           currentHitMatrix = null;
           hasSurface = false;
           reticleEl.setAttribute('visible', false);
-          if (placementMode) setStatus('Searching for a surface… slowly sweep the camera across the floor or tabletop.');
+          if (placementMode) {
+            setStatus(hitTestUnavailable
+              ? 'No automatic surface result. Turn on Manual placement and aim down at the floor/table.'
+              : 'Searching for a surface… move slowly over a textured, well-lit floor/table. If no ring appears, turn on Manual placement.');
+          }
         }
         updateHud();
         // Drive gameplay from the XR frame clock while immersive AR is active.
@@ -613,6 +686,28 @@
     }
 
     placeBtn.addEventListener('click', confirmPlacement);
+    manualBtn.addEventListener('click', () => {
+      if (!session || active || !placementMode) return;
+      manualMode = !manualMode;
+      hasSurface = false;
+      currentHitMatrix = null;
+      reticleEl.setAttribute('visible', false);
+      setStatus(manualMode
+        ? `Manual placement ON. Aim down at the ${manualSurfaceY === 0 ? 'floor' : 'tabletop'} until the yellow ring appears.`
+        : 'Manual placement OFF. Scanning for a real surface using WebXR hit-test.');
+      hintTextEl.innerHTML = manualMode
+        ? 'Estimated placement only: floor uses y=0 in local-floor space; table uses the selected approximate height. Aim the camera down at the spot.'
+        : 'Move slowly over a broad, well-lit, textured surface. Turn manual placement on if no ring appears.';
+      updateHud();
+    });
+    manualSurfaceSelect.addEventListener('change', () => {
+      manualSurfaceY = Number(manualSurfaceSelect.value) || 0;
+      if (session && placementMode && manualMode) {
+        hasSurface = false;
+        currentHitMatrix = null;
+      }
+      updateHud();
+    });
     repositionBtn.addEventListener('click', enterPlacementMode);
     tossBtn.addEventListener('click', launchPaper);
     fanBtn.addEventListener('click', () => {
