@@ -1,0 +1,11 @@
+Model Information:
+* title:	Office Cubical Trash Bin
+* source:	https://sketchfab.com/3d-models/office-cubical-trash-bin-748c8d90f46b4d8e8b30361729f839ee
+* author:	gongarth (https://sketchfab.com/gongarth)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Office Cubical Trash Bin" (https://sketchfab.com/3d-models/office-cubical-trash-bin-748c8d90f46b4d8e8b30361729f839ee) by gongarth (https://sketchfab.com/gongarth) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

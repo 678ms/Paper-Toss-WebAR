@@ -1,184 +1,674 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>WebAR Paper Toss</title>
-  <!-- A-Frame Library -->
-  <script src="https://aframe.io"></script>
-  <!-- AR.js for A-Frame -->
-  <script src="https://githack.com"></script>
-  <!-- A-Frame Physics System for collision and gravity -->
-  <script src="https://jsdelivr.net"></script>
-  
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#101820">
+  <title>Paper Toss AR</title>
   <style>
-    body { margin: 0; overflow: hidden; font-family: sans-serif; }
-    #ui {
-      position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
-      z-index: 10; text-align: center; pointer-events: none;
-    }
-    .btn {
-      background: rgba(0, 0, 0, 0.7); color: white; border: 2px solid white;
-      padding: 10px 20px; font-size: 16px; border-radius: 20px; pointer-events: auto; cursor: pointer;
-    }
-    #score-board {
-      position: absolute; top: 20px; left: 20px; color: white;
-      font-size: 24px; font-weight: bold; text-shadow: 2px 2px 4px #000; z-index: 10;
+    :root { color-scheme: dark; --yellow: #ffd166; --panel: rgba(10, 18, 26, .82); }
+    * { box-sizing: border-box; }
+    html, body { width:100%; height:100%; margin:0; overflow:hidden; background:#101820; color:#fff; font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    body > a-scene { position:fixed!important; inset:0!important; width:100vw!important; height:100dvh!important; }
+    #hud { position:fixed; z-index:20; inset:0; display:flex; flex-direction:column; justify-content:space-between; padding:max(12px,env(safe-area-inset-top)) 12px max(12px,env(safe-area-inset-bottom)); pointer-events:none; }
+    .top-panel { align-self:center; width:min(580px,100%); padding:12px 15px; border-radius:17px; background:var(--panel); border:1px solid rgba(255,255,255,.16); backdrop-filter:blur(9px); text-align:center; box-shadow:0 5px 24px rgba(0,0,0,.15); }
+    .brand { font-weight:900; letter-spacing:.14em; font-size:12px; color:var(--yellow); margin-bottom:4px; }
+    #status { font-size:14px; line-height:1.35; }
+    #assetWarning { color:#ffcf8a; font-size:11px; line-height:1.35; margin-top:5px; }
+    #assetWarning:empty { display:none; }
+    .stats { display:flex; justify-content:center; flex-wrap:wrap; gap:7px; margin-top:9px; }
+    .stat { background:rgba(255,255,255,.10); border:1px solid rgba(255,255,255,.1); border-radius:10px; padding:6px 9px; min-width:94px; font-size:11px; }
+    .stat b { display:block; font-size:15px; letter-spacing:.01em; }
+    #distanceLabel { color:#b6e7f8; }
+    .bottom-panel { align-self:center; width:min(580px,100%); display:flex; flex-direction:column; align-items:center; gap:8px; margin-bottom:68px; pointer-events:none; }
+    .controls { display:flex; justify-content:center; flex-wrap:wrap; gap:8px; width:100%; pointer-events:auto; }
+    button { min-height:44px; padding:10px 14px; border:1px solid rgba(255,255,255,.2); border-radius:13px; font-size:13px; font-weight:800; cursor:pointer; color:#13202b; background:#f8fafc; box-shadow:0 4px 14px rgba(0,0,0,.2); touch-action:manipulation; }
+    button.primary { background:var(--yellow); border-color:#ffe29b; }
+    button.secondary { background:#dbeafe; }
+    button:disabled { opacity:.42; cursor:not-allowed; }
+    .hint { align-self:stretch; padding:8px 10px; border-radius:10px; background:rgba(10,18,26,.70); font-size:11px; line-height:1.35; text-align:center; }
+    .pill { display:inline-block; padding:2px 6px; margin:0 1px; border-radius:5px; background:rgba(255,255,255,.14); }
+    #hud.xr-overlay { pointer-events:none; }
+    #hud button { pointer-events:auto; }
+    @media (max-width: 420px) {
+      .bottom-panel { margin-bottom:60px; }
+      button { min-height:42px; padding:9px 11px; font-size:12px; }
+      .top-panel { padding:10px 11px; }
+      .stat { min-width:85px; padding:5px 7px; }
     }
   </style>
+  <script src="https://aframe.io/releases/1.8.0/aframe.min.js"></script>
+  <script>
+    // Normalize each model to a desired real-world height and keep its bottom or center at the origin.
+    // This avoids depending on the units used when the Sketchfab model was exported.
+    AFRAME.registerComponent('fit-gltf-height', {
+      schema: {
+        height: { type: 'number', default: 0.3 },
+        align: { type: 'string', default: 'ground' } // ground | center
+      },
+      init: function () {
+        this.done = false;
+        this.onLoaded = this.onLoaded.bind(this);
+        this.el.addEventListener('model-loaded', this.onLoaded);
+      },
+      onLoaded: function () {
+        if (this.done) return;
+        const outer = this.el.object3D;
+        outer.updateMatrixWorld(true);
+        const inverseOuter = new THREE.Matrix4().copy(outer.matrixWorld).invert();
+        const bounds = new THREE.Box3();
+        bounds.makeEmpty();
+        outer.traverse((obj) => {
+          if (!obj.isMesh || !obj.geometry) return;
+          if (!obj.geometry.boundingBox) obj.geometry.computeBoundingBox();
+          if (!obj.geometry.boundingBox) return;
+          const relativeMatrix = new THREE.Matrix4().multiplyMatrices(inverseOuter, obj.matrixWorld);
+          bounds.union(obj.geometry.boundingBox.clone().applyMatrix4(relativeMatrix));
+        });
+        if (bounds.isEmpty()) return;
+        const size = new THREE.Vector3();
+        const center = new THREE.Vector3();
+        bounds.getSize(size);
+        bounds.getCenter(center);
+        if (!Number.isFinite(size.y) || size.y < 0.00001) return;
+        const fit = this.data.height / size.y;
+        outer.scale.setScalar(fit);
+        outer.position.x -= center.x * fit;
+        outer.position.z -= center.z * fit;
+        outer.position.y -= (this.data.align === 'center' ? center.y : bounds.min.y) * fit;
+        outer.updateMatrixWorld(true);
+        this.done = true;
+      }
+    });
+  </script>
 </head>
 <body>
+  <div id="hud">
+    <div class="top-panel">
+      <div class="brand">PAPER TOSS · WEBAR</div>
+      <div id="status">Tap <b>Enter AR</b>, then slowly point your camera at a floor or tabletop.</div>
+      <div id="assetWarning"></div>
+      <div class="stats">
+        <div class="stat"><span>POINTS</span><b id="scoreValue">0</b></div>
+        <div class="stat"><span>BASKETS</span><b id="basketValue">0</b></div>
+        <div class="stat"><span>BIN RANGE</span><b id="distanceValue">—</b></div>
+      </div>
+      <div id="distanceLabel" style="font-size:11px;margin-top:5px;">A longer successful toss earns more points.</div>
+    </div>
 
-  <!-- Score Display -->
-  <div id="score-board">Score: <span id="score">0</span></div>
-
-  <!-- UI Action Button -->
-  <div id="ui">
-    <button id="action-btn" class="btn">Tap Screen to Setup Basket</button>
+    <div class="bottom-panel">
+      <div class="controls">
+        <button id="placeBtn" class="primary" disabled>Place game</button>
+        <button id="repositionBtn" class="secondary" disabled>Reposition</button>
+        <button id="tossBtn" disabled>Toss paper</button>
+        <button id="fanBtn" disabled>Fan: ON</button>
+        <button id="resetBtn">Reset score</button>
+      </div>
+      <div class="hint" id="hintText">Move your phone slowly until a surface ring appears. Aim the camera toward the bin and tap <span class="pill">Toss paper</span>. Keep the bin visible for best tracking.</div>
+    </div>
   </div>
 
-  <!-- AR Scene -->
-  <a-scene 
-    embedded 
-    arjs="sourceType: webcam; debugUIEnabled: false; trackingMethod: best;"
-    physics="debug: false; gravity: -9.8">
-    
-    <a-assets>
-      <!-- Visual texture for the paper ball -->
-      <img id="paper-texture" src="https://githubusercontent.com" crossorigin="anonymous">
+  <a-scene
+    embedded
+    renderer="alpha: true; colorManagement: true; physicallyCorrectLights: true; antialias: true"
+    webxr="referenceSpaceType: local-floor; requiredFeatures: hit-test,local-floor; optionalFeatures: dom-overlay; overlayElement: #hud"
+    xr-mode-ui="XRMode: ar"
+    vr-mode-ui="enabled: false"
+    device-orientation-permission-ui="enabled: false">
+    <a-assets timeout="30000">
+      <a-asset-item id="trashBinAsset" src="./assets/models/trash-bin/scene.gltf"></a-asset-item>
+      <a-asset-item id="fanAsset" src="./assets/models/table-fan/scene.gltf"></a-asset-item>
+      <a-asset-item id="paperAsset" src="./assets/models/scrunched-paper/scene.gltf"></a-asset-item>
     </a-assets>
 
-    <!-- Camera -->
-    
+    <a-entity light="type: ambient; color: #ffffff; intensity: 1.25"></a-entity>
+    <a-entity light="type: directional; color: #ffffff; intensity: 0.8" position="-1 3 2"></a-entity>
+    <!-- An origin at 0,0,0 is important: WebXR supplies the real camera's pose. -->
+    <a-camera id="xrCamera" position="0 0 0" look-controls="enabled: false"></a-camera>
 
-    <!-- Ambient Light -->
-    <a-light type="ambient" intensity="0.7"></a-light>
-    <a-light type="directional" intensity="0.5" position="1 2 1"></a-light>
+    <!-- This follows the latest hit-test result while the user is placing/repositioning. -->
+    <a-entity id="surfaceReticle" visible="false">
+      <a-ring position="0 0.002 0" rotation="-90 0 0" radius-inner="0.105" radius-outer="0.12" material="color: #ffd166; shader: flat; side: double; opacity: 0.95; transparent: true"></a-ring>
+      <a-circle position="0 0.001 0" rotation="-90 0 0" radius="0.105" material="color: #ffd166; shader: flat; side: double; opacity: 0.14; transparent: true"></a-circle>
+    </a-entity>
 
-    <!-- Game Anchor (Where the game elements sit once placed) -->
-    
-      
-      <!-- Wastebasket / Bin -->
-      <!-- Made of a transparent cylinder wall and a solid static base to catch the ball -->
-      
-        <!-- Basket Rim/Sides -->
-        <a-cylinder radius="0.25" height="0.5" open-ended="true" color="#a8dadc" side="double" opacity="0.8"></a-cylinder>
-        <!-- Invisible scoring trigger zone inside the basket -->
-        <a-box id="score-trigger" width="0.4" height="0.1" depth="0.4" position="0 0.1 0" opacity="0" static-body></a-box>
-        <!-- Solid bottom to stop the ball -->
-        <a-cylinder radius="0.25" height="0.05" position="0 -0.23 0" color="#457b9d" static-body></a-cylinder>
-      
+    <a-entity id="placementRoot" visible="false">
+      <!-- Floor/table contact marker. This is translucent and doesn't block the camera view. -->
+      <a-circle position="0 0.003 0" rotation="-90 0 0" radius="0.21" material="color: #ffffff; shader: flat; opacity: 0.12; transparent: true; side: double"></a-circle>
 
-    
+      <a-entity id="trashBin" position="0 0 0">
+        <a-entity id="trashBinModel" gltf-model="#trashBinAsset" fit-gltf-height="height: 0.32; align: ground"></a-entity>
+        <!-- Simple fallback remains visible until the supplied glTF and its sidecar files load. -->
+        <a-entity id="binFallback">
+          <a-cylinder position="0 0.16 0" radius="0.14" height="0.32" geometry="primitive: cylinder; radius: 0.14; height: 0.32; openEnded: true" material="color: #52606d; metalness: 0.25; roughness: 0.55"></a-cylinder>
+          <a-torus position="0 0.31 0" rotation="90 0 0" radius="0.125" radius-tubular="0.012" material="color: #263341; metalness: 0.2; roughness: 0.6"></a-torus>
+          <a-circle position="0 0.295 0" rotation="-90 0 0" radius="0.105" material="color: #101820; shader: flat; side: double; roughness: 1"></a-circle>
+        </a-entity>
+      </a-entity>
 
+      <a-entity id="fan" position="-0.38 0 -0.16" rotation="0 90 0">
+        <a-entity id="fanModel" gltf-model="#fanAsset" fit-gltf-height="height: 0.30; align: ground"></a-entity>
+        <a-entity id="fanFallback">
+          <a-cylinder position="0 0.018 0" radius="0.105" height="0.036" material="color: #38485a; metalness: 0.2; roughness: 0.55"></a-cylinder>
+          <a-cylinder position="0 0.13 0" radius="0.018" height="0.22" material="color: #64748b; metalness: 0.25; roughness: 0.45"></a-cylinder>
+          <a-circle position="0 0.245 0.015" radius="0.09" material="color: #cbd5e1; opacity: 0.8; transparent: true; side: double"></a-circle>
+          <a-circle position="0.018 0.245 0.015" radius="0.065" material="color: #94a3b8; opacity: 0.95; transparent: true; side: double"></a-circle>
+          <a-cylinder position="0.023 0.245 0.015" rotation="0 0 90" radius="0.012" height="0.10" material="color: #334155"></a-cylinder>
+        </a-entity>
+      </a-entity>
+
+      <a-entity id="paper" visible="false" position="0 0.8 0">
+        <a-entity id="paperModel" gltf-model="#paperAsset" fit-gltf-height="height: 0.075; align: center"></a-entity>
+        <a-dodecahedron id="paperFallback" radius="0.04" material="color: #eeeeee; roughness: 0.92"></a-dodecahedron>
+      </a-entity>
+    </a-entity>
   </a-scene>
 
   <script>
-    const actionBtn = document.getElementById('action-btn');
-    const gameZone = document.getElementById('game-zone');
-    const scoreElement = document.getElementById('score');
+  (() => {
+    'use strict';
+    const $ = (id) => document.getElementById(id);
     const scene = document.querySelector('a-scene');
-    
-    let gameState = 'PLACING_BASKET'; // Game stages: PLACING_BASKET, PLAYING
-    let score = 0;
-    let ballCount = 0;
+    const hud = $('hud');
+    const statusEl = $('status');
+    const assetWarningEl = $('assetWarning');
+    const scoreValueEl = $('scoreValue');
+    const basketValueEl = $('basketValue');
+    const distanceValueEl = $('distanceValue');
+    const distanceLabelEl = $('distanceLabel');
+    const hintTextEl = $('hintText');
+    const placeBtn = $('placeBtn');
+    const repositionBtn = $('repositionBtn');
+    const tossBtn = $('tossBtn');
+    const fanBtn = $('fanBtn');
+    const resetBtn = $('resetBtn');
+    const rootEl = $('placementRoot');
+    const reticleEl = $('surfaceReticle');
+    const paperEl = $('paper');
 
-    // 1. Setup Phase: Place the basket in AR space
-    window.addEventListener('click', () => {
-      if (gameState === 'PLACING_BASKET') {
-        // Fixes the basket position 2 meters in front of wherever the user is looking
-        gameZone.setAttribute('visible', 'true');
-        gameState = 'PLAYING';
-        actionBtn.innerText = 'Toss Paper!';
-      } else if (gameState === 'PLAYING') {
-        tossPaper();
-      }
-    });
+    // ---------------------- GAMEPLAY SETTINGS (meters / seconds) ----------------------
+    // These are approximate simple colliders, not mesh-triangle physics.
+    const CFG = {
+      gravity: 4.8,
+      paperRadius: 0.026,
+      bin: { x: 0, z: 0, innerRadius: 0.102, outerRadius: 0.145, rimY: 0.30, insideY: 0.12 },
+      fan: { x: -0.38, z: -0.16, acceleration: 1.65, corridorHalfWidth: 0.34, maxHeight: 1.20 },
+      maxFlightSeconds: 3.0,
+      floorRestitution: 0.18,
+      rimRestitution: 0.20,
+      scoreBands: [
+        { max: 1.5, points: 10, label: 'Short range' },
+        { max: 2.5, points: 20, label: 'Medium range' },
+        { max: 3.5, points: 30, label: 'Long range' },
+        { max: 4.5, points: 40, label: 'Expert range' },
+        { max: Infinity, points: 50, label: 'Legend range' }
+      ]
+    };
 
-    // Alternate trigger for the screen button
-    actionBtn.addEventListener('click', (e) => {
-      e.stopPropagation(); // Prevents double-triggering the window click
-      if (gameState === 'PLACING_BASKET') {
-        gameZone.setAttribute('visible', 'true');
-        gameState = 'PLAYING';
-        actionBtn.innerText = 'Toss Paper!';
+    let session = null;
+    let hitTestSource = null;
+    let currentHitMatrix = null;
+    let hasSurface = false;
+    let placed = false;
+    let placementMode = true;
+    let fanOn = true;
+    let active = false;
+    let points = 0;
+    let baskets = 0;
+    let throws = 0;
+    let flightTime = 0;
+    let lastFrameTime = null;
+    let velocity = { x: 0, y: 0, z: 0 };
+    let throwDistance = 0;
+    let latestCameraWorld = null;  // Vector3 in the XR reference space.
+    let latestCameraQuat = null;   // Quaternion in the XR reference space.
+    let sessionSerial = 0;
+    let failedModels = new Set();
+    let loadedModels = new Set();
+
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const vector3 = () => new THREE.Vector3();
+
+    function setStatus(message) { statusEl.textContent = message; }
+    function rangeBand(distance) {
+      return CFG.scoreBands.find((band) => distance < band.max) || CFG.scoreBands[CFG.scoreBands.length - 1];
+    }
+    function updateHud() {
+      scoreValueEl.textContent = String(points);
+      basketValueEl.textContent = `${baskets} / ${throws}`;
+      fanBtn.textContent = `Fan: ${fanOn ? 'ON' : 'OFF'}`;
+      fanBtn.disabled = !placed || placementMode;
+      tossBtn.disabled = !placed || placementMode || active || !session;
+      repositionBtn.disabled = !placed || active || !session;
+      placeBtn.disabled = !session || !hasSurface || active || !placementMode;
+      placeBtn.textContent = placed && placementMode ? 'Confirm position' : 'Place game';
+      if (latestCameraWorld && placed) {
+        const local = getCameraLocalPosition();
+        if (local) {
+          const distance = Math.hypot(local.x - CFG.bin.x, local.z - CFG.bin.z);
+          const band = rangeBand(distance);
+          distanceValueEl.textContent = `${distance.toFixed(1)} m`;
+          distanceLabelEl.textContent = `A successful basket from here is worth +${band.points} points · ${band.label}`;
+        }
       } else {
-        tossPaper();
+        distanceValueEl.textContent = placed ? '—' : '—';
+        distanceLabelEl.textContent = placed ? 'Move around to change your throwing distance.' : 'Place the game on a detected surface to begin.';
       }
-    });
+    }
 
-    // 2. Physics Gameplay: Spawn and throw a paper ball
-    function tossPaper() {
-      ballCount++;
-      const ballId = `ball-${ballCount}`;
-      
-      // Get the current camera position and direction to throw accurately
-      const cameraEl = document.querySelector('[camera]');
-      const camera3D = cameraEl.object3D;
-      
-      // Calculate throw vectors
-      const direction = new THREE.Vector3(0, 0, -1);
-      direction.applyQuaternion(camera3D.quaternion);
+    function copyPoseMatrix(matrixArray, targetObj) {
+      const matrix = new THREE.Matrix4().fromArray(Array.from(matrixArray));
+      const position = new THREE.Vector3();
+      const quaternion = new THREE.Quaternion();
+      const scale = new THREE.Vector3();
+      matrix.decompose(position, quaternion, scale);
+      targetObj.position.copy(position);
+      targetObj.quaternion.copy(quaternion);
+      targetObj.scale.set(1, 1, 1);
+      targetObj.updateMatrixWorld(true);
+    }
+
+    function copyReticleToGame() {
+      const reticle = reticleEl.object3D;
+      const root = rootEl.object3D;
+      root.position.copy(reticle.position);
+      root.quaternion.copy(reticle.quaternion);
+      root.scale.set(1, 1, 1);
+      root.updateMatrixWorld(true);
+    }
+
+    function getCameraLocalPosition() {
+      if (!latestCameraWorld || !placed) return null;
+      rootEl.object3D.updateMatrixWorld(true);
+      return rootEl.object3D.worldToLocal(latestCameraWorld.clone());
+    }
+
+    function currentPlanarDistance() {
+      const cam = getCameraLocalPosition();
+      if (!cam) return 0;
+      return Math.hypot(cam.x - CFG.bin.x, cam.z - CFG.bin.z);
+    }
+
+    function setPaperVisible(visible) { paperEl.setAttribute('visible', visible); }
+    function setPaperPosition(p) { paperEl.object3D.position.set(p.x, p.y, p.z); }
+
+    function resetPaper() {
+      active = false;
+      setPaperVisible(false);
+      setPaperPosition({ x: 0, y: 0.8, z: 0 });
+      lastFrameTime = null;
+      updateHud();
+    }
+
+    function enterPlacementMode() {
+      if (!session) {
+        setStatus('Enter AR first, then scan for a floor or table.');
+        return;
+      }
+      if (active) return;
+      placementMode = true;
+      hasSurface = false;
+      reticleEl.setAttribute('visible', false);
+      setStatus(placed ? 'Reposition mode: move the phone to a detected surface, then confirm.' : 'Scan slowly until the yellow ring locks onto a floor or tabletop.');
+      hintTextEl.innerHTML = 'Aim at a broad, well-lit surface with visible texture. When the yellow ring appears, tap <span class="pill">Confirm position</span>.';
+      updateHud();
+    }
+
+    function confirmPlacement() {
+      if (!session || !hasSurface || !currentHitMatrix || active) return;
+      copyPoseMatrix(currentHitMatrix, reticleEl.object3D);
+      copyReticleToGame();
+      rootEl.setAttribute('visible', true);
+      placed = true;
+      placementMode = false;
+      reticleEl.setAttribute('visible', false);
+      resetPaper();
+      setStatus('Game placed! Move backward or forward to change the range bonus, aim toward the bin and toss.');
+      hintTextEl.innerHTML = 'Aim the camera toward the bin to line up your throw. Walk farther away for more points. The fan blows the paper sideways.';
+      updateHud();
+    }
+
+    function modelLoaded(modelId, fallbackId) {
+      loadedModels.add(modelId);
+      $(fallbackId).setAttribute('visible', false);
+      if (failedModels.has(modelId)) failedModels.delete(modelId);
+      updateAssetWarning();
+    }
+
+    function modelFailed(modelId, fallbackId) {
+      failedModels.add(modelId);
+      $(fallbackId).setAttribute('visible', true);
+      updateAssetWarning();
+    }
+
+    function updateAssetWarning() {
+      if (failedModels.size > 0) {
+        assetWarningEl.textContent = 'A 3D model failed to load. Check the model folder paths and browser console for the underlying error.';
+      } else if (loadedModels.size === 3) {
+        assetWarningEl.textContent = '';
+      }
+    }
+    $('trashBinModel').addEventListener('model-loaded', () => modelLoaded('trashBinModel', 'binFallback'));
+    $('fanModel').addEventListener('model-loaded', () => modelLoaded('fanModel', 'fanFallback'));
+    $('paperModel').addEventListener('model-loaded', () => modelLoaded('paperModel', 'paperFallback'));
+    $('trashBinModel').addEventListener('model-error', () => modelFailed('trashBinModel', 'binFallback'));
+    $('fanModel').addEventListener('model-error', () => modelFailed('fanModel', 'fanFallback'));
+    $('paperModel').addEventListener('model-error', () => modelFailed('paperModel', 'paperFallback'));
+
+    async function startHitTesting(xrSession) {
+      const thisSerial = ++sessionSerial;
+      session = xrSession;
+      lastFrameTime = null;
+      hitTestSource = null;
+      currentHitMatrix = null;
+      hasSurface = false;
+      latestCameraWorld = null;
+      latestCameraQuat = null;
+      setStatus('AR is active. Point the camera at a floor or tabletop and move slowly.');
+      updateHud();
+
+      try {
+        const viewerSpace = await xrSession.requestReferenceSpace('viewer');
+        const source = await xrSession.requestHitTestSource({ space: viewerSpace });
+        if (session !== xrSession || thisSerial !== sessionSerial) {
+          source.cancel();
+          return;
+        }
+        hitTestSource = source;
+      } catch (error) {
+        console.error('Could not create WebXR hit-test source:', error);
+        setStatus('Surface detection could not start. Check that this browser/device supports WebXR hit-test.');
+        return;
+      }
+
+      const onXRFrame = (time, frame) => {
+        if (session !== xrSession || thisSerial !== sessionSerial) return;
+        try { xrSession.requestAnimationFrame(onXRFrame); } catch (_) { return; }
+        const refSpace = scene.renderer && scene.renderer.xr && scene.renderer.xr.getReferenceSpace();
+        if (!refSpace) return;
+
+        const viewerPose = frame.getViewerPose(refSpace);
+        if (viewerPose) {
+          const p = viewerPose.transform.position;
+          const q = viewerPose.transform.orientation;
+          latestCameraWorld = new THREE.Vector3(p.x, p.y, p.z);
+          latestCameraQuat = new THREE.Quaternion(q.x, q.y, q.z, q.w);
+        }
+
+        let pose = null;
+        if (hitTestSource) {
+          const results = frame.getHitTestResults(hitTestSource);
+          if (results && results.length) pose = results[0].getPose(refSpace);
+        }
+        if (pose) {
+          currentHitMatrix = Array.from(pose.transform.matrix);
+          copyPoseMatrix(currentHitMatrix, reticleEl.object3D);
+          hasSurface = true;
+          reticleEl.setAttribute('visible', placementMode);
+          if (placementMode) setStatus(placed ? 'Surface found. Move the ring to the new location and confirm.' : 'Surface found! Tap Place game to set up Paper Toss.');
+        } else {
+          currentHitMatrix = null;
+          hasSurface = false;
+          reticleEl.setAttribute('visible', false);
+          if (placementMode) setStatus('Searching for a surface… slowly sweep the camera across the floor or tabletop.');
+        }
+        updateHud();
+        // Drive gameplay from the XR frame clock while immersive AR is active.
+        advancePhysics(time);
+      };
+      xrSession.requestAnimationFrame(onXRFrame);
+    }
+
+    function stopHitTesting() {
+      sessionSerial += 1;
+      if (hitTestSource) {
+        try { hitTestSource.cancel(); } catch (_) { /* session already ended */ }
+      }
+      hitTestSource = null;
+      session = null;
+      currentHitMatrix = null;
+      hasSurface = false;
+      latestCameraWorld = null;
+      latestCameraQuat = null;
+      reticleEl.setAttribute('visible', false);
+      if (active) resetPaper();
+      // A new immersive session may use a new reference-space origin; require a fresh placement.
+      placed = false;
+      placementMode = true;
+      rootEl.setAttribute('visible', false);
+      setStatus('AR ended. Tap Enter AR and place the game again to continue.');
+      updateHud();
+    }
+
+    // Detect when A-Frame's AR-mode UI has opened/closed a WebXR session.
+    function watchXRSession() {
+      const current = scene.renderer && scene.renderer.xr ? scene.renderer.xr.getSession() : null;
+      if (current && current !== session) startHitTesting(current);
+      else if (!current && session) stopHitTesting();
+      requestAnimationFrame(watchXRSession);
+    }
+
+    function finishThrow(message) {
+      active = false;
+      setStatus(message);
+      updateHud();
+    }
+
+    function pointsForDistance(distance) { return rangeBand(distance).points; }
+
+    function winThrow() {
+      const earned = pointsForDistance(throwDistance);
+      points += earned;
+      baskets += 1;
+      active = false;
+      setPaperPosition({ x: CFG.bin.x, y: CFG.bin.insideY, z: CFG.bin.z });
+      setStatus(`Basket! +${earned} points from ${throwDistance.toFixed(1)} m. Toss again!`);
+      updateHud();
+    }
+
+    function missThrow(message = 'Miss! Try aiming more carefully or switch the fan off.') {
+      active = false;
+      setStatus(message);
+      updateHud();
+    }
+
+    function launchPaper() {
+      if (!session || !placed || placementMode || active) return;
+      const cameraLocal = getCameraLocalPosition();
+      if (!cameraLocal || !latestCameraQuat) {
+        setStatus('Waiting for camera tracking…');
+        return;
+      }
+      throwDistance = Math.hypot(cameraLocal.x - CFG.bin.x, cameraLocal.z - CFG.bin.z);
+      const inverseRootRotation = rootEl.object3D.quaternion.clone().invert();
+      const direction = new THREE.Vector3(0, 0, -1).applyQuaternion(latestCameraQuat);
+      direction.y = 0; // Keep the horizontal aiming direction; gravity provides the arc.
+      if (direction.lengthSq() < 0.0001) direction.set(0, 0, -1);
+      direction.normalize().applyQuaternion(inverseRootRotation);
+      direction.y = 0;
       direction.normalize();
 
-      // Create the paper ball entity
-      const ball = document.createElement('a-sphere');
-      ball.setAttribute('id', ballId);
-      ball.setAttribute('radius', '0.08');
-      ball.setAttribute('src', '#paper-texture');
-      ball.setAttribute('color', '#f1faee');
-      
-      // Position the ball just in front of the camera lens
-      const spawnPos = new THREE.Vector3();
-      camera3D.getWorldPosition(spawnPos);
-      spawnPos.addScaledVector(direction, 0.2); // slight offset forward
-      ball.setAttribute('position', `${spawnPos.x} ${spawnPos.y} ${spawnPos.z}`);
-      
-      // Add physics body dynamics
-      ball.setAttribute('dynamic-body', 'mass: 0.1; restitution: 0.4;');
-      
-      scene.appendChild(ball);
+      const spawn = {
+        x: cameraLocal.x + direction.x * 0.22,
+        y: clamp(cameraLocal.y - 0.22, 0.22, 1.75),
+        z: cameraLocal.z + direction.z * 0.22
+      };
+      setPaperPosition(spawn);
 
-      // Apply initial impulse force after physics engine registers the body
-      ball.addEventListener('body-loaded', () => {
-        // Tweak impulse numbers to change throw strength/arc
-        const forceMagnitude = 0.5; 
-        const impulse = new THREE.Vector3(
-          direction.x * forceMagnitude,
-          (direction.y + 0.5) * forceMagnitude * 1.2, // Adds an upward arc to the toss
-          direction.z * forceMagnitude
-        );
-        
-        ball.body.applyImpulse(
-          new CANNON.Vec3(impulse.x, impulse.y, impulse.z),
-          new CANNON.Vec3(0, 0, 0)
-        );
-      });
+      // Choose a smooth baseline arc. The player still has to aim the camera at the bin;
+      // fan wind, a poor aim direction, and the rim collider can all cause a miss.
+      const toBinX = CFG.bin.x - spawn.x;
+      const toBinZ = CFG.bin.z - spawn.z;
+      const alongAim = toBinX * direction.x + toBinZ * direction.z;
+      const flightToBin = clamp(0.82 + throwDistance * 0.16, 0.95, 1.65);
+      const distanceAlongAim = alongAim > 0.15 ? alongAim : Math.max(0.75, throwDistance * 0.55);
+      const horizontalSpeed = clamp(distanceAlongAim / flightToBin, 0.65, 4.2);
+      const verticalVelocity = (CFG.bin.rimY - spawn.y + 0.5 * CFG.gravity * flightToBin * flightToBin) / flightToBin;
 
-      // 3. Collision / Score Tracking
-      let scored = false;
-      ball.addEventListener('collisions', (e) => {
-        // Check if the ball hit the scoring zone inside the basket
-        if (e.detail.els.includes(document.getElementById('score-trigger')) && !scored) {
-          scored = true;
-          score++;
-          scoreElement.innerText = score;
-          
-          // Flash feedback color on successful score
-          document.getElementById('basket').firstElementChild.setAttribute('color', '#e63946');
-          setTimeout(() => {
-            document.getElementById('basket').firstElementChild.setAttribute('color', '#a8dadc');
-          }, 300);
-        }
-      });
-
-      // Cleanup old balls to maintain mobile performance
-      setTimeout(() => {
-        if (ball && ball.parentNode) {
-          ball.parentNode.removeChild(ball);
-        }
-      }, 5000);
+      velocity = {
+        x: direction.x * horizontalSpeed,
+        y: clamp(verticalVelocity, 0.25, 4.4),
+        z: direction.z * horizontalSpeed
+      };
+      flightTime = 0;
+      active = true;
+      throws += 1;
+      setPaperVisible(true);
+      setStatus(`Tossed from ${throwDistance.toFixed(1)} m. ${fanOn ? 'Watch the fan wind!' : 'Fan is off.'}`);
+      updateHud();
     }
+
+    function simulateStep(dt) {
+      if (!active) return;
+      flightTime += dt;
+      const previousY = paperEl.object3D.position.y;
+      const pos = paperEl.object3D.position;
+
+      // 1) Gravity: downward acceleration in the placement's local up/down axis.
+      velocity.y -= CFG.gravity * dt;
+
+      // 2) Table fan: a sideways acceleration in a corridor in front of the fan.
+      // Fan visual is rotated toward +X; adjust windDirection here if your model faces another way.
+      if (fanOn) {
+        const dxFromFan = pos.x - CFG.fan.x;
+        const dzFromFan = Math.abs(pos.z - CFG.fan.z);
+        const inWindCorridor = dxFromFan > 0.02 && dxFromFan < 0.72 && dzFromFan < CFG.fan.corridorHalfWidth && pos.y > 0.08 && pos.y < CFG.fan.maxHeight;
+        if (inWindCorridor) {
+          const xFalloff = 1 - clamp(dxFromFan / 0.72, 0, 1);
+          const zFalloff = 1 - dzFromFan / CFG.fan.corridorHalfWidth;
+          velocity.x += CFG.fan.acceleration * Math.max(0.12, xFalloff) * zFalloff * dt;
+        }
+      }
+
+      // Semi-implicit Euler integration in small substeps keeps collisions stable on phones.
+      pos.x += velocity.x * dt;
+      pos.y += velocity.y * dt;
+      pos.z += velocity.z * dt;
+
+      const dx = pos.x - CFG.bin.x;
+      const dz = pos.z - CFG.bin.z;
+      const radialDistance = Math.hypot(dx, dz);
+      const crossedRimDownward = previousY > CFG.bin.rimY && pos.y <= CFG.bin.rimY && velocity.y < 0;
+
+      // 3) Opening / rim collision. A score requires a downward crossing into the inner opening.
+      if (crossedRimDownward) {
+        if (radialDistance < CFG.bin.innerRadius - CFG.paperRadius) {
+          winThrow();
+          return;
+        }
+        if (radialDistance < CFG.bin.outerRadius + CFG.paperRadius) {
+          pos.y = CFG.bin.rimY + CFG.paperRadius;
+          velocity.y = Math.abs(velocity.y) * CFG.rimRestitution;
+          velocity.x *= 0.72;
+          velocity.z *= 0.72;
+        }
+      }
+
+      // 4) Bin outer-wall collision. The cylinder is an approximation of the uploaded mesh.
+      if (pos.y > CFG.paperRadius && pos.y < CFG.bin.rimY && radialDistance < CFG.bin.outerRadius + CFG.paperRadius && radialDistance > CFG.bin.innerRadius - CFG.paperRadius) {
+        const safeDistance = CFG.bin.outerRadius + CFG.paperRadius;
+        const nx = radialDistance > 0.0001 ? dx / radialDistance : 1;
+        const nz = radialDistance > 0.0001 ? dz / radialDistance : 0;
+        pos.x = CFG.bin.x + nx * safeDistance;
+        pos.z = CFG.bin.z + nz * safeDistance;
+        const normalVelocity = velocity.x * nx + velocity.z * nz;
+        if (normalVelocity < 0) {
+          velocity.x -= 1.5 * normalVelocity * nx;
+          velocity.z -= 1.5 * normalVelocity * nz;
+        }
+      }
+
+      // 5) Surface collision (floor or table top); bounce once, then count it as a miss.
+      if (pos.y <= CFG.paperRadius) {
+        pos.y = CFG.paperRadius;
+        if (Math.abs(velocity.y) > 0.38 && flightTime < 1.9) {
+          velocity.y = Math.abs(velocity.y) * CFG.floorRestitution;
+          velocity.x *= 0.52;
+          velocity.z *= 0.52;
+        } else {
+          missThrow();
+          return;
+        }
+      }
+      if (Math.abs(pos.x) > 7 || Math.abs(pos.z) > 7 || flightTime > CFG.maxFlightSeconds) {
+        missThrow('Miss! The paper went out of range. Try a closer throw or adjust your aim.');
+      }
+    }
+
+    function advancePhysics(now) {
+      if (lastFrameTime === null) lastFrameTime = now;
+      const dt = Math.min((now - lastFrameTime) / 1000, 0.05);
+      lastFrameTime = now;
+      if (!active || dt <= 0) return;
+      const steps = Math.max(1, Math.ceil(dt / (1 / 120)));
+      const stepDt = dt / steps;
+      for (let i = 0; i < steps && active; i++) simulateStep(stepDt);
+    }
+
+    function frameLoop(now) {
+      requestAnimationFrame(frameLoop);
+      // The immersive XRSession has its own frame clock. Avoid double-stepping physics.
+      if (session) return;
+      advancePhysics(now);
+    }
+
+    placeBtn.addEventListener('click', confirmPlacement);
+    repositionBtn.addEventListener('click', enterPlacementMode);
+    tossBtn.addEventListener('click', launchPaper);
+    fanBtn.addEventListener('click', () => {
+      fanOn = !fanOn;
+      setStatus(`Fan switched ${fanOn ? 'ON' : 'OFF'}. Toss paper to test the airflow.`);
+      updateHud();
+    });
+    resetBtn.addEventListener('click', () => {
+      points = 0;
+      baskets = 0;
+      throws = 0;
+      resetPaper();
+      setStatus(placed ? 'Score reset. Move to your chosen range and toss again.' : 'Score reset. Enter AR and place the game on a detected surface.');
+      updateHud();
+    });
+
+    scene.addEventListener('loaded', () => {
+      if (!navigator.xr || !navigator.xr.isSessionSupported) {
+        setStatus('This browser does not expose WebXR AR. Try a compatible Android browser/device over HTTPS.');
+      } else {
+        navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
+          if (!supported) setStatus('Immersive AR is not supported here. Use an ARCore-compatible Android phone with Chrome over HTTPS.');
+        }).catch(() => {});
+      }
+      requestAnimationFrame(frameLoop);
+      requestAnimationFrame(watchXRSession);
+      // Missing resources may emit either model-error or asset-item errors, depending on which file fails.
+      document.querySelectorAll('a-asset-item').forEach((asset) => {
+        asset.addEventListener('error', () => {
+          assetWarningEl.textContent = 'A model asset could not be fetched. Check the network request and the model folder paths.';
+        });
+      });
+    });
+
+    function beginHitTestIfSessionExists() {
+      const current = scene.renderer && scene.renderer.xr ? scene.renderer.xr.getSession() : null;
+      if (current && current !== session) startHitTesting(current);
+    }
+    // Enter AR is normally announced by enter-vr in A-Frame; listen to enter-ar too
+    // for versions that emit a separate AR event. The frame watcher is a fallback.
+    scene.addEventListener('enter-vr', beginHitTestIfSessionExists);
+    scene.addEventListener('enter-ar', beginHitTestIfSessionExists);
+    scene.addEventListener('exit-vr', () => {
+      // A-Frame fires exit-vr when an immersive session closes, including AR mode.
+      if (session && !(scene.renderer && scene.renderer.xr && scene.renderer.xr.getSession())) stopHitTesting();
+    });
+    scene.addEventListener('exit-ar', () => {
+      if (session && !(scene.renderer && scene.renderer.xr && scene.renderer.xr.getSession())) stopHitTesting();
+    });
+
+    if (scene.hasLoaded) {
+      requestAnimationFrame(frameLoop);
+      requestAnimationFrame(watchXRSession);
+    }
+    updateHud();
+  })();
   </script>
 </body>
 </html>
