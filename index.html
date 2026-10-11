@@ -11,6 +11,8 @@
     html, body { width:100%; height:100%; margin:0; overflow:hidden; background:#101820; color:#fff; font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
     body > a-scene { position:fixed!important; inset:0!important; width:100vw!important; height:100dvh!important; }
     #hud { position:fixed; z-index:20; inset:0; display:flex; flex-direction:column; justify-content:space-between; padding:max(12px,env(safe-area-inset-top)) 12px max(12px,env(safe-area-inset-bottom)); pointer-events:none; }
+    #swipeSurface { position:absolute; inset:0; z-index:0; pointer-events:auto; touch-action:none; background:transparent; }
+    .top-panel, .bottom-panel { position:relative; z-index:1; pointer-events:none; }
     .top-panel { align-self:center; width:min(580px,100%); padding:12px 15px; border-radius:17px; background:var(--panel); border:1px solid rgba(255,255,255,.16); backdrop-filter:blur(9px); text-align:center; box-shadow:0 5px 24px rgba(0,0,0,.15); }
     .brand { font-weight:900; letter-spacing:.14em; font-size:12px; color:var(--yellow); margin-bottom:4px; }
     #status { font-size:14px; line-height:1.35; }
@@ -30,7 +32,7 @@
     .hint { align-self:stretch; padding:8px 10px; border-radius:10px; background:rgba(10,18,26,.70); font-size:11px; line-height:1.35; text-align:center; }
     .pill { display:inline-block; padding:2px 6px; margin:0 1px; border-radius:5px; background:rgba(255,255,255,.14); }
     #hud.xr-overlay { pointer-events:none; }
-    #hud button { pointer-events:auto; }
+    #hud button, #hud select { pointer-events:auto; }
     @media (max-width: 420px) {
       .bottom-panel { margin-bottom:60px; }
       button { min-height:42px; padding:9px 11px; font-size:12px; }
@@ -85,9 +87,10 @@
 </head>
 <body>
   <div id="hud">
+    <div id="swipeSurface" aria-label="Swipe upward to throw the paper"></div>
     <div class="top-panel">
       <div class="brand">PAPER TOSS · WEBAR</div>
-      <div id="status">Tap <b>Enter AR</b>, scan for a surface, or enable manual placement if detection fails.</div>
+      <div id="status">Enter AR, place the game, aim at the bin, then swipe upward to throw. Faster swipes travel farther.</div>
       <div id="assetWarning"></div>
       <div class="stats">
         <div class="stat"><span>POINTS</span><b id="scoreValue">0</b></div>
@@ -106,11 +109,9 @@
           <option value="0.75">Table (~75 cm)</option>
         </select>
         <button id="repositionBtn" class="secondary" disabled>Reposition</button>
-        <button id="tossBtn" disabled>Toss paper</button>
-        <button id="fanBtn" disabled>Fan: ON</button>
         <button id="resetBtn">Reset score</button>
       </div>
-      <div class="hint" id="hintText">Scan slowly for a surface ring. If none appears, enable Manual placement and aim down at the floor/table. Aim toward the bin and tap <span class="pill">Toss paper</span>.</div>
+      <div class="hint" id="hintText">Place the game, aim the camera toward the bin, then swipe upward anywhere on the camera view. A faster flick gives the paper more power. Walk farther away for a higher distance bonus.</div>
     </div>
   </div>
 
@@ -123,7 +124,6 @@
     device-orientation-permission-ui="enabled: false">
     <a-assets timeout="30000">
       <a-asset-item id="trashBinAsset" src="./assets/models/trash-bin/scene.gltf"></a-asset-item>
-      <a-asset-item id="fanAsset" src="./assets/models/table-fan/scene.gltf"></a-asset-item>
       <a-asset-item id="paperAsset" src="./assets/models/scrunched-paper/scene.gltf"></a-asset-item>
     </a-assets>
 
@@ -152,17 +152,6 @@
         </a-entity>
       </a-entity>
 
-      <a-entity id="fan" position="-0.38 0 -0.16" rotation="0 90 0">
-        <a-entity id="fanModel" gltf-model="#fanAsset" fit-gltf-height="height: 0.30; align: ground"></a-entity>
-        <a-entity id="fanFallback">
-          <a-cylinder position="0 0.018 0" radius="0.105" height="0.036" material="color: #38485a; metalness: 0.2; roughness: 0.55"></a-cylinder>
-          <a-cylinder position="0 0.13 0" radius="0.018" height="0.22" material="color: #64748b; metalness: 0.25; roughness: 0.45"></a-cylinder>
-          <a-circle position="0 0.245 0.015" radius="0.09" material="color: #cbd5e1; opacity: 0.8; transparent: true; side: double"></a-circle>
-          <a-circle position="0.018 0.245 0.015" radius="0.065" material="color: #94a3b8; opacity: 0.95; transparent: true; side: double"></a-circle>
-          <a-cylinder position="0.023 0.245 0.015" rotation="0 0 90" radius="0.012" height="0.10" material="color: #334155"></a-cylinder>
-        </a-entity>
-      </a-entity>
-
       <a-entity id="paper" visible="false" position="0 0.8 0">
         <a-entity id="paperModel" gltf-model="#paperAsset" fit-gltf-height="height: 0.075; align: center"></a-entity>
         <a-dodecahedron id="paperFallback" radius="0.04" material="color: #eeeeee; roughness: 0.92"></a-dodecahedron>
@@ -187,21 +176,23 @@
     const manualBtn = $('manualBtn');
     const manualSurfaceSelect = $('manualSurfaceSelect');
     const repositionBtn = $('repositionBtn');
-    const tossBtn = $('tossBtn');
-    const fanBtn = $('fanBtn');
+    const swipeSurface = $('swipeSurface');
     const resetBtn = $('resetBtn');
     const rootEl = $('placementRoot');
     const reticleEl = $('surfaceReticle');
-    const paperEl = $('paper');
+    const paperEl = $('paper'); // First paper entity also serves as the template for later throws.
+    let activePaperEl = paperEl;
+    let activePaperFinalized = false;
+    let paperInstanceCounter = 0;
 
     // ---------------------- GAMEPLAY SETTINGS (meters / seconds) ----------------------
     // These are approximate simple colliders, not mesh-triangle physics.
     const CFG = {
-      gravity: 4.8,
+      gravity: 9.8,
       paperRadius: 0.026,
+      paperGroundY: 0.038, // Half of the 7.5 cm paper model, so the visible ball rests above the surface.
       bin: { x: 0, z: 0, innerRadius: 0.102, outerRadius: 0.145, rimY: 0.30, insideY: 0.12 },
-      fan: { x: -0.38, z: -0.16, acceleration: 1.65, corridorHalfWidth: 0.34, maxHeight: 1.20 },
-      maxFlightSeconds: 3.0,
+      maxFlightSeconds: 2.2,
       floorRestitution: 0.18,
       rimRestitution: 0.20,
       scoreBands: [
@@ -222,7 +213,6 @@
     let manualMode = false;
     let manualSurfaceY = 0; // In local-floor coordinates: 0=floor, ~0.75m=tabletop.
     let hitTestUnavailable = false;
-    let fanOn = true;
     let active = false;
     let points = 0;
     let baskets = 0;
@@ -247,9 +237,6 @@
     function updateHud() {
       scoreValueEl.textContent = String(points);
       basketValueEl.textContent = `${baskets} / ${throws}`;
-      fanBtn.textContent = `Fan: ${fanOn ? 'ON' : 'OFF'}`;
-      fanBtn.disabled = !placed || placementMode;
-      tossBtn.disabled = !placed || placementMode || active || !session;
       repositionBtn.disabled = !placed || active || !session;
       placeBtn.disabled = !session || !hasSurface || active || !placementMode;
       placeBtn.textContent = placed && placementMode ? 'Confirm position' : 'Place game';
@@ -268,7 +255,7 @@
         }
       } else {
         distanceValueEl.textContent = placed ? '—' : '—';
-        distanceLabelEl.textContent = placed ? 'Move around to change your throwing distance.' : 'Place the game on a detected surface to begin.';
+        distanceLabelEl.textContent = placed ? 'Move around to change the distance bonus.' : 'Place the game on a detected surface to begin.';
       }
     }
 
@@ -326,13 +313,47 @@
       return Math.hypot(cam.x - CFG.bin.x, cam.z - CFG.bin.z);
     }
 
-    function setPaperVisible(visible) { paperEl.setAttribute('visible', visible); }
-    function setPaperPosition(p) { paperEl.object3D.position.set(p.x, p.y, p.z); }
+    function setPaperVisible(visible) { activePaperEl.setAttribute('visible', visible); }
+    function setPaperPosition(p) { activePaperEl.object3D.position.set(p.x, p.y, p.z); }
+
+    // Preserve each finished paper as a scene object. The next throw gets a new
+    // entity cloned from the original markup, so a miss can remain on the ground.
+    function createPaperInstance() {
+      const clone = paperEl.cloneNode(true);
+      clone.id = `paper-instance-${++paperInstanceCounter}`;
+      clone.classList.add('paper-instance');
+      clone.setAttribute('visible', false);
+      clone.querySelectorAll('[id]').forEach((node) => node.removeAttribute('id'));
+
+      const model = clone.querySelector('[gltf-model]');
+      const fallback = clone.querySelector('a-dodecahedron');
+      if (fallback) fallback.setAttribute('visible', true);
+      if (model && fallback) {
+        model.addEventListener('model-loaded', () => fallback.setAttribute('visible', false));
+        model.addEventListener('model-error', () => fallback.setAttribute('visible', true));
+      }
+      rootEl.appendChild(clone);
+      return clone;
+    }
+
+    function preparePaperForNextThrow() {
+      if (activePaperFinalized) {
+        activePaperEl = createPaperInstance();
+        activePaperFinalized = false;
+      }
+    }
 
     function resetPaper() {
+      const wasInFlight = active;
       active = false;
-      setPaperVisible(false);
-      setPaperPosition({ x: 0, y: 0.8, z: 0 });
+      // Reset/hide only a paper that has not landed or been scored. Finalized
+      // papers are litter/contents of the bin and should remain visible.
+      if (wasInFlight || !activePaperFinalized) {
+        setPaperVisible(false);
+        setPaperPosition({ x: 0, y: 0.8, z: 0 });
+        activePaperFinalized = false;
+      }
+      velocity = { x: 0, y: 0, z: 0 };
       lastFrameTime = null;
       updateHud();
     }
@@ -364,8 +385,8 @@
       placementMode = false;
       reticleEl.setAttribute('visible', false);
       resetPaper();
-      setStatus('Game placed! Move backward or forward to change the range bonus, aim toward the bin and toss.');
-      hintTextEl.innerHTML = 'Aim the camera toward the bin to line up your throw. Walk farther away for more points. The fan blows the paper sideways.';
+      setStatus('Game placed! Move backward or forward to change the range bonus, aim toward the bin and swipe upward.');
+      hintTextEl.innerHTML = 'Aim the camera toward the bin, then swipe upward. Swipe diagonally to steer left/right; faster flicks travel farther. Missed papers remain on the ground.';
       updateHud();
     }
 
@@ -385,15 +406,13 @@
     function updateAssetWarning() {
       if (failedModels.size > 0) {
         assetWarningEl.textContent = 'A 3D model failed to load. Check the model folder paths and browser console for the underlying error.';
-      } else if (loadedModels.size === 3) {
+      } else if (loadedModels.size === 2) {
         assetWarningEl.textContent = '';
       }
     }
     $('trashBinModel').addEventListener('model-loaded', () => modelLoaded('trashBinModel', 'binFallback'));
-    $('fanModel').addEventListener('model-loaded', () => modelLoaded('fanModel', 'fanFallback'));
     $('paperModel').addEventListener('model-loaded', () => modelLoaded('paperModel', 'paperFallback'));
     $('trashBinModel').addEventListener('model-error', () => modelFailed('trashBinModel', 'binFallback'));
-    $('fanModel').addEventListener('model-error', () => modelFailed('fanModel', 'fanFallback'));
     $('paperModel').addEventListener('model-error', () => modelFailed('paperModel', 'paperFallback'));
 
     async function startHitTesting(xrSession) {
@@ -535,83 +554,98 @@
       baskets += 1;
       active = false;
       setPaperPosition({ x: CFG.bin.x, y: CFG.bin.insideY, z: CFG.bin.z });
-      setStatus(`Basket! +${earned} points from ${throwDistance.toFixed(1)} m. Toss again!`);
+      activePaperFinalized = true; // Keep the scored paper inside the bin.
+      velocity = { x: 0, y: 0, z: 0 };
+      setStatus(`Basket! +${earned} points from ${throwDistance.toFixed(1)} m. Swipe again!`);
       updateHud();
     }
 
-    function missThrow(message = 'Miss! Try aiming more carefully or switch the fan off.') {
+    function missThrow(message = 'Miss! Try a faster or slower upward swipe, and aim toward the bin.') {
       active = false;
-      setStatus(message);
+      const pos = activePaperEl.object3D.position;
+      // Keep the miss where it landed, but settle it onto the placed floor/table.
+      // For a timeout/out-of-range miss this projects the final X/Z onto the ground.
+      pos.y = CFG.paperGroundY;
+      activePaperEl.object3D.rotation.x = (Math.random() - 0.5) * 0.55;
+      activePaperEl.object3D.rotation.z = (Math.random() - 0.5) * 0.55;
+      velocity = { x: 0, y: 0, z: 0 };
+      activePaperFinalized = true;
+      setPaperVisible(true);
+      setStatus(`${message} The paper stays where it landed.`);
       updateHud();
     }
 
-    function launchPaper() {
+    function launchPaper(gesture) {
       if (!session || !placed || placementMode || active) return;
       const cameraLocal = getCameraLocalPosition();
       if (!cameraLocal || !latestCameraQuat) {
         setStatus('Waiting for camera tracking…');
         return;
       }
-      throwDistance = Math.hypot(cameraLocal.x - CFG.bin.x, cameraLocal.z - CFG.bin.z);
-      const inverseRootRotation = rootEl.object3D.quaternion.clone().invert();
-      const direction = new THREE.Vector3(0, 0, -1).applyQuaternion(latestCameraQuat);
-      direction.y = 0; // Keep the horizontal aiming direction; gravity provides the arc.
-      if (direction.lengthSq() < 0.0001) direction.set(0, 0, -1);
-      direction.normalize().applyQuaternion(inverseRootRotation);
-      direction.y = 0;
-      direction.normalize();
+      if (!gesture || !Number.isFinite(gesture.power)) return;
+      preparePaperForNextThrow();
 
+      // Save camera-to-bin distance at release time; walking during flight cannot
+      // change the range bonus for this throw.
+      throwDistance = Math.hypot(cameraLocal.x - CFG.bin.x, cameraLocal.z - CFG.bin.z);
+
+      // Aim along the camera's horizontal forward direction. The left/right part
+      // of a diagonal swipe adds a small side component. Swipe UP is required.
+      const inverseRootRotation = rootEl.object3D.quaternion.clone().invert();
+      const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(latestCameraQuat);
+      forward.y = 0;
+      if (forward.lengthSq() < 0.0001) forward.set(0, 0, -1);
+      forward.normalize().applyQuaternion(inverseRootRotation);
+      forward.y = 0;
+      forward.normalize();
+
+      const right = new THREE.Vector3(1, 0, 0).applyQuaternion(latestCameraQuat);
+      right.y = 0;
+      if (right.lengthSq() < 0.0001) right.set(1, 0, 0);
+      right.normalize().applyQuaternion(inverseRootRotation);
+      right.y = 0;
+      right.normalize();
+
+      // Swipe X adds a sideways velocity while the phone's horizontal aim still
+      // determines the main throw direction. Positive dx = screen-right; negative
+      // dx = screen-left. Clamp it so diagonal swipes steer, rather than turn sideways.
+      const sideRatio = clamp(gesture.dx / Math.max(gesture.up, 1), -0.72, 0.72);
       const spawn = {
-        x: cameraLocal.x + direction.x * 0.22,
+        x: cameraLocal.x + forward.x * 0.18,
         y: clamp(cameraLocal.y - 0.22, 0.22, 1.75),
-        z: cameraLocal.z + direction.z * 0.22
+        z: cameraLocal.z + forward.z * 0.18
       };
       setPaperPosition(spawn);
+      activePaperEl.object3D.rotation.set(0, 0, 0);
 
-      // Choose a smooth baseline arc. The player still has to aim the camera at the bin;
-      // fan wind, a poor aim direction, and the rim collider can all cause a miss.
-      const toBinX = CFG.bin.x - spawn.x;
-      const toBinZ = CFG.bin.z - spawn.z;
-      const alongAim = toBinX * direction.x + toBinZ * direction.z;
-      const flightToBin = clamp(0.82 + throwDistance * 0.16, 0.95, 1.65);
-      const distanceAlongAim = alongAim > 0.15 ? alongAim : Math.max(0.75, throwDistance * 0.55);
-      const horizontalSpeed = clamp(distanceAlongAim / flightToBin, 0.65, 4.2);
-      const verticalVelocity = (CFG.bin.rimY - spawn.y + 0.5 * CFG.gravity * flightToBin * flightToBin) / flightToBin;
-
+      // Faster finger movement produces more forward speed and a modestly higher arc.
+      const power = clamp(gesture.power, 0.08, 1.0);
+      const horizontalSpeed = 1.0 + power * 5.4;
+      const verticalVelocity = 1.5 + power * 1.0;
+      const sideVelocity = sideRatio * horizontalSpeed * 0.72;
       velocity = {
-        x: direction.x * horizontalSpeed,
-        y: clamp(verticalVelocity, 0.25, 4.4),
-        z: direction.z * horizontalSpeed
+        x: forward.x * horizontalSpeed + right.x * sideVelocity,
+        y: verticalVelocity,
+        z: forward.z * horizontalSpeed + right.z * sideVelocity
       };
+
       flightTime = 0;
       active = true;
       throws += 1;
       setPaperVisible(true);
-      setStatus(`Tossed from ${throwDistance.toFixed(1)} m. ${fanOn ? 'Watch the fan wind!' : 'Fan is off.'}`);
+      const powerPercent = Math.round(power * 100);
+      setStatus(`Throw power ${powerPercent}% · range bonus ${pointsForDistance(throwDistance)} points if you score. Aim carefully!`);
       updateHud();
     }
 
     function simulateStep(dt) {
       if (!active) return;
       flightTime += dt;
-      const previousY = paperEl.object3D.position.y;
-      const pos = paperEl.object3D.position;
+      const previousY = activePaperEl.object3D.position.y;
+      const pos = activePaperEl.object3D.position;
 
-      // 1) Gravity: downward acceleration in the placement's local up/down axis.
+      // Gravity: downward acceleration in the placement's local up/down axis.
       velocity.y -= CFG.gravity * dt;
-
-      // 2) Table fan: a sideways acceleration in a corridor in front of the fan.
-      // Fan visual is rotated toward +X; adjust windDirection here if your model faces another way.
-      if (fanOn) {
-        const dxFromFan = pos.x - CFG.fan.x;
-        const dzFromFan = Math.abs(pos.z - CFG.fan.z);
-        const inWindCorridor = dxFromFan > 0.02 && dxFromFan < 0.72 && dzFromFan < CFG.fan.corridorHalfWidth && pos.y > 0.08 && pos.y < CFG.fan.maxHeight;
-        if (inWindCorridor) {
-          const xFalloff = 1 - clamp(dxFromFan / 0.72, 0, 1);
-          const zFalloff = 1 - dzFromFan / CFG.fan.corridorHalfWidth;
-          velocity.x += CFG.fan.acceleration * Math.max(0.12, xFalloff) * zFalloff * dt;
-        }
-      }
 
       // Semi-implicit Euler integration in small substeps keeps collisions stable on phones.
       pos.x += velocity.x * dt;
@@ -623,7 +657,7 @@
       const radialDistance = Math.hypot(dx, dz);
       const crossedRimDownward = previousY > CFG.bin.rimY && pos.y <= CFG.bin.rimY && velocity.y < 0;
 
-      // 3) Opening / rim collision. A score requires a downward crossing into the inner opening.
+      // Opening / rim collision. A score requires a downward crossing into the inner opening.
       if (crossedRimDownward) {
         if (radialDistance < CFG.bin.innerRadius - CFG.paperRadius) {
           winThrow();
@@ -637,7 +671,7 @@
         }
       }
 
-      // 4) Bin outer-wall collision. The cylinder is an approximation of the uploaded mesh.
+      // Bin outer-wall collision. The cylinder is an approximation of the uploaded mesh.
       if (pos.y > CFG.paperRadius && pos.y < CFG.bin.rimY && radialDistance < CFG.bin.outerRadius + CFG.paperRadius && radialDistance > CFG.bin.innerRadius - CFG.paperRadius) {
         const safeDistance = CFG.bin.outerRadius + CFG.paperRadius;
         const nx = radialDistance > 0.0001 ? dx / radialDistance : 1;
@@ -651,7 +685,7 @@
         }
       }
 
-      // 5) Surface collision (floor or table top); bounce once, then count it as a miss.
+      // Surface collision (floor or table top); bounce once, then count it as a miss.
       if (pos.y <= CFG.paperRadius) {
         pos.y = CFG.paperRadius;
         if (Math.abs(velocity.y) > 0.38 && flightTime < 1.9) {
@@ -709,18 +743,55 @@
       updateHud();
     });
     repositionBtn.addEventListener('click', enterPlacementMode);
-    tossBtn.addEventListener('click', launchPaper);
-    fanBtn.addEventListener('click', () => {
-      fanOn = !fanOn;
-      setStatus(`Fan switched ${fanOn ? 'ON' : 'OFF'}. Toss paper to test the airflow.`);
-      updateHud();
-    });
+
+    // Swipe upward on the transparent AR overlay to throw. The power comes from
+    // normalized finger speed (screen heights per second), which adapts better to
+    // different phone resolutions than raw pixels per second.
+    let swipeStart = null;
+    swipeSurface.addEventListener('pointerdown', (event) => {
+      if (!session || !placed || placementMode || active) return;
+      if (event.isPrimary === false) return;
+      if (event.pointerType === 'mouse' && event.button !== 0) return;
+      swipeStart = {
+        pointerId: event.pointerId,
+        x: event.clientX,
+        y: event.clientY,
+        time: performance.now()
+      };
+      try { swipeSurface.setPointerCapture(event.pointerId); } catch (_) {}
+      event.preventDefault();
+    }, { passive: false });
+
+    swipeSurface.addEventListener('pointerup', (event) => {
+      if (!swipeStart || event.pointerId !== swipeStart.pointerId) return;
+      event.preventDefault();
+      const start = swipeStart;
+      swipeStart = null;
+      if (!session || !placed || placementMode || active) return;
+
+      const dx = event.clientX - start.x;
+      const up = start.y - event.clientY; // Positive means the finger swiped upward.
+      const duration = Math.max(0.06, (performance.now() - start.time) / 1000);
+      const screenScale = Math.max(1, Math.min(window.innerWidth, window.innerHeight));
+      const distanceNormalized = Math.hypot(dx, up) / screenScale;
+      if (up < 28 || up < Math.abs(dx) * 0.22 || distanceNormalized < 0.055) {
+        setStatus('Swipe upward to throw. Swipe up-left/right to steer a little; faster swipes travel farther.');
+        return;
+      }
+
+      const normalizedSpeed = distanceNormalized / duration;
+      const power = clamp(normalizedSpeed / 5.5, 0.08, 1.0);
+      launchPaper({ dx, up, duration, power });
+    }, { passive: false });
+
+    swipeSurface.addEventListener('pointercancel', () => { swipeStart = null; });
+    swipeSurface.addEventListener('lostpointercapture', () => { swipeStart = null; });
     resetBtn.addEventListener('click', () => {
       points = 0;
       baskets = 0;
       throws = 0;
       resetPaper();
-      setStatus(placed ? 'Score reset. Move to your chosen range and toss again.' : 'Score reset. Enter AR and place the game on a detected surface.');
+      setStatus(placed ? 'Score reset. Aim at the bin and swipe upward to throw again.' : 'Score reset. Enter AR and place the game on a detected surface.');
       updateHud();
     });
 
