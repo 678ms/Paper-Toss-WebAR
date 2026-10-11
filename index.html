@@ -22,24 +22,26 @@
     .stat { background:rgba(255,255,255,.10); border:1px solid rgba(255,255,255,.1); border-radius:10px; padding:6px 9px; min-width:94px; font-size:11px; }
     .stat b { display:block; font-size:15px; letter-spacing:.01em; }
     #distanceLabel { color:#b6e7f8; }
-    /* Compact slide-up control drawer: only the supplied menu image stays visible when closed. */
+    /* Content-sized drawer: the closed state exposes only a small menu tab, and the open
+       state grows just enough for its controls (up to a safe mobile-height limit). */
     #controlsDrawer {
       position:fixed; z-index:30; left:12px; right:12px;
-      bottom:calc(8px + env(safe-area-inset-bottom));
-      width:min(580px, calc(100% - 24px)); height:min(55dvh, 410px); min-height:220px;
+      bottom:calc(6px + env(safe-area-inset-bottom));
+      display:flex; flex-direction:column;
+      width:min(580px, calc(100% - 24px)); height:auto; max-height:min(52dvh, 430px); min-height:0;
       margin:0 auto; overflow:hidden; border:1px solid rgba(255,255,255,.18);
-      border-radius:18px; background:rgba(10,18,26,.92); backdrop-filter:blur(13px);
+      border-radius:16px; background:rgba(10,18,26,.94); backdrop-filter:blur(13px);
       box-shadow:0 8px 30px rgba(0,0,0,.36);
-      transform:translateY(calc(100% - 62px));
+      transform:translateY(calc(100% - 48px));
       transition:transform .28s cubic-bezier(.2,.8,.2,1);
       pointer-events:auto; will-change:transform;
     }
     #controlsDrawer.is-open { transform:translateY(0); }
-    #drawerHandle { height:62px; display:flex; align-items:center; justify-content:center; border-bottom:1px solid rgba(255,255,255,.12); background:rgba(255,255,255,.035); }
-    #menuToggle { width:58px; height:48px; min-height:48px; padding:4px; display:flex; align-items:center; justify-content:center; background:transparent; border:0; border-radius:12px; box-shadow:none; }
-    #menuToggle img { width:38px; height:38px; object-fit:contain; filter:invert(1); }
+    #drawerHandle { flex:0 0 48px; height:48px; display:flex; align-items:center; justify-content:center; border-bottom:1px solid rgba(255,255,255,.12); background:rgba(255,255,255,.035); }
+    #menuToggle { width:48px; height:40px; min-height:40px; padding:2px; display:flex; align-items:center; justify-content:center; background:transparent; border:0; border-radius:10px; box-shadow:none; }
+    #menuToggle img { width:32px; height:32px; object-fit:contain; filter:invert(1); }
     #menuToggle:focus-visible { outline:2px solid var(--yellow); outline-offset:1px; }
-    .drawer-content { height:calc(100% - 62px); overflow-y:auto; overscroll-behavior:contain; padding:10px 12px calc(14px + env(safe-area-inset-bottom)); opacity:0; visibility:hidden; transition:opacity .16s ease, visibility .16s ease; }
+    .drawer-content { flex:0 1 auto; min-height:0; max-height:calc(min(52dvh, 430px) - 48px); overflow-y:auto; overscroll-behavior:contain; padding:9px 10px calc(9px + env(safe-area-inset-bottom)); opacity:0; visibility:hidden; transition:opacity .16s ease, visibility .16s ease; }
     #controlsDrawer.is-open .drawer-content { opacity:1; visibility:visible; transition-delay:.06s; }
     .controls { display:flex; justify-content:center; align-items:center; flex-wrap:wrap; gap:8px; width:100%; pointer-events:auto; }
     button { min-height:44px; padding:10px 14px; border:1px solid rgba(255,255,255,.2); border-radius:13px; font-size:13px; font-weight:800; cursor:pointer; color:#13202b; background:#f8fafc; box-shadow:0 4px 14px rgba(0,0,0,.2); touch-action:manipulation; }
@@ -59,7 +61,8 @@
     #arBtn { min-width: 132px; }
     @media (max-width: 420px) {
       button { min-height:42px; padding:9px 11px; font-size:12px; }
-      #controlsDrawer { height:min(58dvh, 410px); }
+      #controlsDrawer { max-height:min(56dvh, 430px); }
+      .drawer-content { max-height:calc(min(56dvh, 430px) - 48px); }
       .top-panel { padding:10px 11px; }
       .stat { min-width:85px; padding:5px 7px; }
     }
@@ -108,46 +111,50 @@
       }
     });
 
-    // Keep the crumpled-paper texture visible regardless of AR lighting or tumble angle.
-    // The source is a matte paper ball, so an unlit material is more reliable than a
-    // metallic/PBR response on mobile GPUs and when the projectile rotates in flight.
+    // Give the paper mesh a fixed matte material with NO texture dependency.
+    // The original GLTF base-colour map can render nearly black on some mobile GPU/
+    // WebXR combinations during fast rotation. Keep the original 3D geometry, but
+    // remove the map and lighting calculation entirely so the projectile stays light.
     AFRAME.registerComponent('paper-unlit-material', {
       init: function () {
         this.applyMaterial = this.applyMaterial.bind(this);
         this.el.addEventListener('model-loaded', this.applyMaterial);
-        if (this.el.getObject3D('mesh')) this.applyMaterial();
+        this.el.addEventListener('object3dset', this.applyMaterial);
+        const existing = this.el.getObject3D('mesh');
+        if (existing) this.applyMaterial();
       },
       applyMaterial: function () {
         const root = this.el.getObject3D('mesh');
         if (!root) return;
         root.traverse((node) => {
-          if (!node.isMesh || !node.material) return;
-          const replace = (oldMat) => {
-            if (!oldMat) return oldMat;
-            // Keep the original base-colour texture and factors, but remove lighting
-            // dependence that can make the model look black as it rotates.
-            const color = oldMat.color ? oldMat.color.clone() : new THREE.Color(0xffffff);
+          if (!node.isMesh || !node.geometry) return;
+          const replace = () => {
             const mat = new THREE.MeshBasicMaterial({
-              map: oldMat.map || null,
-              color,
+              color: 0xe6dfd1,
+              map: null,
+              alphaMap: null,
+              vertexColors: false,
               side: THREE.DoubleSide,
-              transparent: !!oldMat.transparent,
-              opacity: oldMat.opacity == null ? 1 : oldMat.opacity,
-              alphaMap: oldMat.alphaMap || null,
-              vertexColors: !!oldMat.vertexColors,
-              toneMapped: false
+              transparent: false,
+              opacity: 1,
+              toneMapped: false,
+              fog: false
             });
-            mat.name = (oldMat.name || 'Paper') + '_Unlit';
+            mat.name = 'Paper_Matte_Unlit_NoTexture';
             return mat;
           };
-          node.material = Array.isArray(node.material)
-            ? node.material.map(replace)
-            : replace(node.material);
-          node.material.needsUpdate = true;
+          if (Array.isArray(node.material)) {
+            node.material = node.material.map(() => replace());
+            node.material.forEach((mat) => { mat.needsUpdate = true; });
+          } else {
+            node.material = replace();
+            node.material.needsUpdate = true;
+          }
         });
       },
       remove: function () {
         this.el.removeEventListener('model-loaded', this.applyMaterial);
+        this.el.removeEventListener('object3dset', this.applyMaterial);
       }
     });
   </script>
