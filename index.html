@@ -109,7 +109,6 @@
       <div class="controls">
         <button id="arBtn" class="primary">Start AR Camera</button>
         <button id="placeBtn" class="primary" disabled>Place the bin</button>
-        <button id="manualBtn" class="secondary" disabled>Manual placement: OFF</button>
         <select id="manualSurfaceSelect" aria-label="Manual placement surface" disabled>
           <option value="0">Floor (estimated)</option>
           <option value="0.75">Table (~75 cm)</option>
@@ -124,7 +123,7 @@
   <a-scene
     embedded
     renderer="alpha: true; colorManagement: true; physicallyCorrectLights: true; antialias: true"
-    webxr="referenceSpaceType: local-floor; requiredFeatures: local-floor; optionalFeatures: hit-test,dom-overlay; overlayElement: #hud"
+    webxr="referenceSpaceType: local-floor; requiredFeatures: local-floor; optionalFeatures: dom-overlay; overlayElement: #hud"
     xr-mode-ui="enabled: false"
     device-orientation-permission-ui="enabled: false">
     <a-assets timeout="30000">
@@ -148,7 +147,7 @@
       <a-dodecahedron id="readyPaperFallback" radius="0.04" material="color: #eeeeee; roughness: 0.92" visible="true"></a-dodecahedron>
     </a-entity>
 
-    <!-- This follows the latest hit-test result while the user is placing/repositioning. -->
+    <!-- This follows the estimated camera-ray intersection while placing/repositioning. -->
     <a-entity id="surfaceReticle" visible="false">
       <a-ring position="0 0.002 0" rotation="-90 0 0" radius-inner="0.105" radius-outer="0.12" material="color: #ffd166; shader: flat; side: double; opacity: 0.95; transparent: true"></a-ring>
       <a-circle position="0 0.001 0" rotation="-90 0 0" radius="0.105" material="color: #ffd166; shader: flat; side: double; opacity: 0.14; transparent: true"></a-circle>
@@ -183,7 +182,6 @@
     const distanceLabelEl = $('distanceLabel');
     const hintTextEl = $('hintText');
     const placeBtn = $('placeBtn');
-    const manualBtn = $('manualBtn');
     const manualSurfaceSelect = $('manualSurfaceSelect');
     const repositionBtn = $('repositionBtn');
     const swipeSurface = $('swipeSurface');
@@ -196,8 +194,8 @@
     const readyPaperFallbackEl = $('readyPaperFallback');
     const paperEl = $('paper'); // First paper entity also serves as the template for later throws.
     let activePaperEl = paperEl;
-    let activePaperFinalized = false;
     let paperInstanceCounter = 0;
+    const paperLitterObjects = new Set();
 
     // ---------------------- GAMEPLAY SETTINGS (meters / seconds) ----------------------
     // These are approximate simple colliders, not mesh-triangle physics.
@@ -219,14 +217,11 @@
     };
 
     let session = null;
-    let hitTestSource = null;
     let currentHitMatrix = null;
     let hasSurface = false;
     let placed = false;
     let placementMode = true;
-    let manualMode = false;
     let manualSurfaceY = 0; // In local-floor coordinates: 0=floor, ~0.75m=tabletop.
-    let hitTestUnavailable = false;
     let active = false;
     let points = 0;
     let baskets = 0;
@@ -248,7 +243,6 @@
     let loadedModels = new Set();
 
     const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-    const vector3 = () => new THREE.Vector3();
 
     function setStatus(message) { statusEl.textContent = message; }
     function rangeBand(distance) {
@@ -263,10 +257,6 @@
       repositionBtn.disabled = !placed || active || !session;
       placeBtn.disabled = !session || !hasSurface || active || !placementMode;
       placeBtn.textContent = placed && placementMode ? 'Confirm bin position' : 'Place the bin';
-      manualBtn.disabled = !session || active || !placementMode;
-      manualBtn.textContent = `Manual placement: ${manualMode ? 'ON' : 'OFF'}`;
-      manualBtn.classList.toggle('primary', manualMode);
-      manualBtn.classList.toggle('secondary', !manualMode);
       manualSurfaceSelect.disabled = !session || active || !placementMode;
       if (latestCameraWorld && placed) {
         const local = getCameraLocalPosition();
@@ -282,7 +272,7 @@
       }
     }
 
-    // Manual fallback: cast the centre-camera ray onto an estimated horizontal
+    // Manual placement: cast the centre-camera ray onto an estimated horizontal
     // plane in local-floor coordinates. This does not detect a real table; choose
     // a typical table height in the selector and adjust it for your environment.
     function getManualPlacementMatrix() {
@@ -342,12 +332,6 @@
       readyPaperEl.object3D.updateMatrixWorld(true);
     }
 
-    function currentPlanarDistance() {
-      const cam = getCameraLocalPosition();
-      if (!cam) return 0;
-      return Math.hypot(cam.x - CFG.bin.x, cam.z - CFG.bin.z);
-    }
-
     function setPaperVisible(visible) { activePaperEl.setAttribute('visible', visible); }
     function setPaperPosition(p) { activePaperEl.object3D.position.set(p.x, p.y, p.z); }
     function setReadyPaperVisible(visible) {
@@ -369,69 +353,75 @@
       return { position: localPosition, quaternion: localQuaternion };
     }
 
-    // Preserve each finished paper as a scene object. The next throw gets a new
-    // entity cloned from the original markup, so a miss can remain on the ground.
-    function createPaperInstance() {
-      const clone = paperEl.cloneNode(true);
-      clone.id = `paper-instance-${++paperInstanceCounter}`;
-      clone.classList.add('paper-instance');
-      clone.setAttribute('visible', false);
-      clone.querySelectorAll('[id]').forEach((node) => node.removeAttribute('id'));
-
-      const model = clone.querySelector('[gltf-model]');
-      const fallback = clone.querySelector('a-dodecahedron');
-      if (fallback) fallback.setAttribute('visible', true);
-      if (model && fallback) {
-        model.addEventListener('model-loaded', () => fallback.setAttribute('visible', false));
-        model.addEventListener('model-error', () => fallback.setAttribute('visible', true));
-      }
-      rootEl.appendChild(clone);
-      return clone;
+    // Reuse one A-Frame projectile for every throw. Older builds cloned the A-Frame
+    // DOM after each result; cloned GLTF entities could reinitialize with inconsistent
+    // model/transform state, which is why later throws jumped. Landed papers are now
+    // static Three.js clones of the already-rendered projectile.
+    function preparePaperForNextThrow() {
+      activePaperEl = paperEl;
+      paperEl.object3D.position.set(0, 0.8, 0);
+      paperEl.object3D.rotation.set(0, 0, 0);
+      paperEl.object3D.scale.set(1, 1, 1);
+      paperEl.object3D.updateMatrixWorld(true);
     }
 
-    function preparePaperForNextThrow() {
-      if (activePaperFinalized) {
-        activePaperEl = createPaperInstance();
-        activePaperFinalized = false;
-      }
+    function preserveActivePaperAsLitter() {
+      const source = activePaperEl.object3D;
+      source.updateMatrixWorld(true);
+      const litter = source.clone(true);
+      litter.name = `paper-litter-${++paperInstanceCounter}`;
+      litter.visible = true;
+      rootEl.object3D.add(litter);
+      rootEl.object3D.updateMatrixWorld(true);
+      paperLitterObjects.add(litter);
+
+      // Hide and reset the single projectile only after its landed visual was copied.
+      activePaperEl = paperEl;
+      paperEl.setAttribute('visible', false);
+      paperEl.object3D.position.set(0, 0.8, 0);
+      paperEl.object3D.rotation.set(0, 0, 0);
+      paperEl.object3D.scale.set(1, 1, 1);
+      paperEl.object3D.updateMatrixWorld(true);
+      return litter;
     }
 
     function resetPaper() {
-      const wasInFlight = active;
       active = false;
-      // Reset/hide only a paper that has not landed or been scored. Finalized
-      // papers are litter/contents of the bin and should remain visible.
-      if (wasInFlight || !activePaperFinalized) {
-        setPaperVisible(false);
-        setPaperPosition({ x: 0, y: 0.8, z: 0 });
-        activePaperFinalized = false;
-      }
+      activePaperEl = paperEl;
+      paperEl.setAttribute('visible', false);
+      paperEl.object3D.position.set(0, 0.8, 0);
+      paperEl.object3D.rotation.set(0, 0, 0);
+      paperEl.object3D.scale.set(1, 1, 1);
       velocity = { x: 0, y: 0, z: 0 };
       spinVelocity = { x: 0, y: 0, z: 0 };
+      flightTime = 0;
       lastFrameTime = null;
       updateHud();
     }
 
     function clearPaperLitter() {
       setReadyPaperVisible(false);
-      // Repositioning starts a fresh round: remove all landed paper from the floor
-      // and bin, including cloned instances from earlier throws.
       active = false;
+      // Litter clones are Three.js objects, not A-Frame DOM entities.
+      paperLitterObjects.forEach((object) => rootEl.object3D.remove(object));
+      paperLitterObjects.clear();
+      // Clean up any remnants created by earlier builds, if this script is hot-reloaded.
       document.querySelectorAll('.paper-instance').forEach((entity) => entity.remove());
       activePaperEl = paperEl;
-      activePaperFinalized = false;
       paperEl.setAttribute('visible', false);
       paperEl.object3D.position.set(0, 0.8, 0);
       paperEl.object3D.rotation.set(0, 0, 0);
+      paperEl.object3D.scale.set(1, 1, 1);
       velocity = { x: 0, y: 0, z: 0 };
       spinVelocity = { x: 0, y: 0, z: 0 };
       flightTime = 0;
       lastFrameTime = null;
+      rootEl.object3D.updateMatrixWorld(true);
     }
 
     function enterPlacementMode() {
       if (!session) {
-        setStatus('Enter AR first, then scan for a floor or table.');
+        setStatus('Enter AR first, then aim down at the estimated floor or table.');
         return;
       }
       if (active) return;
@@ -441,12 +431,10 @@
       hasSurface = false;
       reticleEl.setAttribute('visible', false);
       setReadyPaperVisible(false);
-      setStatus(manualMode
-        ? 'Manual mode: aim down at the floor/table until the yellow ring appears, then confirm the bin position.'
-        : (placed ? 'Reposition mode: move the ring to a new surface, then confirm the bin position.' : 'Scan slowly until the yellow ring locks onto a floor or tabletop. If it never appears, switch Manual placement ON.'));
-      hintTextEl.innerHTML = manualMode
-        ? 'Manual fallback uses an estimated horizontal plane. Aim the center of the camera down at the chosen surface and tap <span class="pill">Confirm bin position</span>.'
-        : 'Aim at a broad, well-lit surface with visible texture. If no ring appears after several seconds, turn on <span class="pill">Manual placement</span> and aim down at the target surface.';
+      setStatus(placed
+        ? 'Reposition mode: aim down until the yellow ring marks the estimated floor/table position, then confirm.'
+        : 'Manual placement: aim the center of the camera down at the floor/table until the yellow ring appears.');
+      hintTextEl.innerHTML = 'Manual placement is always enabled. Choose <span class="pill">Floor (estimated)</span> or <span class="pill">Table</span>, aim down at the surface, then tap <span class="pill">Place the bin</span>. The ring is estimated, not physical surface detection.';
       updateHud();
     }
 
@@ -493,38 +481,16 @@
     readyPaperModelEl.addEventListener('model-loaded', () => readyPaperFallbackEl.setAttribute('visible', false));
     readyPaperModelEl.addEventListener('model-error', () => readyPaperFallbackEl.setAttribute('visible', true));
 
-    async function startHitTesting(xrSession) {
+    function startHitTesting(xrSession) {
       const thisSerial = ++sessionSerial;
       session = xrSession;
       lastFrameTime = null;
-      hitTestSource = null;
       currentHitMatrix = null;
       hasSurface = false;
       latestCameraWorld = null;
       latestCameraQuat = null;
-      hitTestUnavailable = false;
-      setStatus('AR is active. Scan for a surface and place the bin; manual placement is available if the ring does not appear.');
+      setStatus('AR is active. Aim down at the estimated floor/table plane, then place the bin.');
       updateHud();
-
-      // Automatic hit testing is an enhancement, not a hard requirement. If it is
-      // unavailable or produces no results, the manual floor/table plane still works.
-      try {
-        if (typeof xrSession.requestHitTestSource !== 'function') {
-          throw new Error('requestHitTestSource is not available in this browser session');
-        }
-        const viewerSpace = await xrSession.requestReferenceSpace('viewer');
-        const source = await xrSession.requestHitTestSource({ space: viewerSpace });
-        if (session !== xrSession || thisSerial !== sessionSerial) {
-          source.cancel();
-          return;
-        }
-        hitTestSource = source;
-      } catch (error) {
-        console.warn('WebXR hit-test unavailable; manual placement remains available:', error);
-        hitTestSource = null;
-        hitTestUnavailable = true;
-        setStatus('Automatic surface detection is unavailable. Turn on Manual placement, aim down at the floor/table, then place the bin.');
-      }
 
       const onXRFrame = (time, frame) => {
         if (session !== xrSession || thisSerial !== sessionSerial) return;
@@ -539,53 +505,27 @@
           latestCameraWorld = new THREE.Vector3(p.x, p.y, p.z);
           latestCameraQuat = new THREE.Quaternion(q.x, q.y, q.z, q.w);
         }
-        // Update the on-screen paper using the exact viewer pose supplied by this XR frame.
         updateReadyPaperPose();
 
-        let pose = null;
-        if (hitTestSource && !manualMode) {
-          try {
-            const results = frame.getHitTestResults(hitTestSource);
-            if (results && results.length) pose = results[0].getPose(refSpace);
-          } catch (error) {
-            console.warn('Hit-test frame query failed:', error);
-            hitTestUnavailable = true;
-            hitTestSource = null;
-          }
-        }
-        if (pose) {
-          currentHitMatrix = Array.from(pose.transform.matrix);
-          copyPoseMatrix(currentHitMatrix, reticleEl.object3D);
-          hasSurface = true;
-          reticleEl.setAttribute('visible', placementMode);
-          if (placementMode) setStatus(placed ? 'Surface found. Move the ring to the new location and confirm the bin position.' : 'Surface found! Tap Place the bin to set up Paper Toss.');
-        } else if (placementMode && manualMode) {
+        if (placementMode) {
           const manualMatrix = getManualPlacementMatrix();
           if (manualMatrix) {
             currentHitMatrix = manualMatrix;
             copyPoseMatrix(currentHitMatrix, reticleEl.object3D);
             hasSurface = true;
             reticleEl.setAttribute('visible', true);
-            setStatus(`Manual ${manualSurfaceY === 0 ? 'floor' : 'table'} position ready. Tap ${placed ? 'Confirm bin position' : 'Place the bin'}.`);
+            setStatus(`Estimated ${manualSurfaceY === 0 ? 'floor' : 'table'} position ready. Tap ${placed ? 'Confirm bin position' : 'Place the bin'}.`);
           } else {
             currentHitMatrix = null;
             hasSurface = false;
             reticleEl.setAttribute('visible', false);
             const surfaceName = manualSurfaceY === 0 ? 'floor' : 'tabletop';
-            setStatus(`Manual mode: aim the center of the camera down at the ${surfaceName}. Keep the target plane in view, then place the bin.`);
+            setStatus(`Aim the center of the camera down at the estimated ${surfaceName}.`);
           }
         } else {
-          currentHitMatrix = null;
-          hasSurface = false;
           reticleEl.setAttribute('visible', false);
-          if (placementMode) {
-            setStatus(hitTestUnavailable
-              ? 'No automatic surface result. Turn on Manual placement and aim down at the floor/table.'
-              : 'Searching for a surface… move slowly over a textured, well-lit floor/table. If no ring appears, turn on Manual placement.');
-          }
         }
         updateHud();
-        // Drive gameplay from the XR frame clock while immersive AR is active.
         advancePhysics(time);
       };
       xrSession.requestAnimationFrame(onXRFrame);
@@ -593,10 +533,6 @@
 
     function stopHitTesting() {
       sessionSerial += 1;
-      if (hitTestSource) {
-        try { hitTestSource.cancel(); } catch (_) { /* session already ended */ }
-      }
-      hitTestSource = null;
       session = null;
       currentHitMatrix = null;
       hasSurface = false;
@@ -605,11 +541,12 @@
       reticleEl.setAttribute('visible', false);
       setReadyPaperVisible(false);
       if (active) resetPaper();
-      // A new immersive session may use a new reference-space origin; require a fresh placement.
+      // Clear static paper from the previous XR reference space and require a fresh placement.
+      clearPaperLitter();
       placed = false;
       placementMode = true;
       rootEl.setAttribute('visible', false);
-      setStatus('AR ended. Tap Start AR Camera and place the bin again to continue.');
+      setStatus('AR ended. Tap Start AR Camera, aim down at the floor/table, and place the bin again.');
       updateHud();
     }
 
@@ -633,9 +570,11 @@
       const earned = pointsForDistance(throwDistance);
       points += earned;
       baskets += 1;
-      active = false;
+      // Preserve a static copy inside the bin, then reuse the same projectile entity.
       setPaperPosition({ x: CFG.bin.x, y: CFG.bin.insideY, z: CFG.bin.z });
-      activePaperFinalized = true; // Keep the scored paper inside the bin.
+      activePaperEl.object3D.updateMatrixWorld(true);
+      preserveActivePaperAsLitter();
+      active = false;
       velocity = { x: 0, y: 0, z: 0 };
       spinVelocity = { x: 0, y: 0, z: 0 };
       setReadyPaperVisible(true);
@@ -644,17 +583,16 @@
     }
 
     function missThrow(message = 'Miss! Try a faster or slower upward swipe, and aim toward the bin.') {
-      active = false;
+      // Keep the missed paper at impact X/Z and settle it onto the placed surface.
       const pos = activePaperEl.object3D.position;
-      // Keep the miss where it landed, but settle it onto the placed floor/table.
-      // For a timeout/out-of-range miss this projects the final X/Z onto the ground.
       pos.y = CFG.paperGroundY;
       activePaperEl.object3D.rotation.x = (Math.random() - 0.5) * 0.55;
       activePaperEl.object3D.rotation.z = (Math.random() - 0.5) * 0.55;
+      activePaperEl.object3D.updateMatrixWorld(true);
+      preserveActivePaperAsLitter();
+      active = false;
       velocity = { x: 0, y: 0, z: 0 };
       spinVelocity = { x: 0, y: 0, z: 0 };
-      activePaperFinalized = true;
-      setPaperVisible(true);
       setReadyPaperVisible(true);
       setStatus(`${message} The paper stays where it landed. Another paper is ready at the front of the screen.`);
       updateHud();
@@ -733,6 +671,7 @@
         z: spawnPose.position.z
       });
       activePaperEl.object3D.quaternion.copy(spawnPose.quaternion);
+      activePaperEl.object3D.updateMatrixWorld(true);
 
       velocity = {
         x: forward.x * horizontalSpeed + right.x * sideVelocity,
@@ -880,7 +819,7 @@
           arRequestPending = false;
           updateHud();
           if (session) {
-            setStatus('AR camera started. Scan the floor or table, then tap Place the bin.');
+            setStatus('AR camera started. Aim down at the floor/table until the placement ring appears, then tap Place the bin.');
           }
         }).catch((error) => {
           console.error('Failed to enter AR:', error, error && error.cause);
@@ -911,25 +850,12 @@
     });
 
     placeBtn.addEventListener('click', confirmPlacement);
-    manualBtn.addEventListener('click', () => {
-      if (!session || active || !placementMode) return;
-      manualMode = !manualMode;
-      hasSurface = false;
-      currentHitMatrix = null;
-      reticleEl.setAttribute('visible', false);
-      setStatus(manualMode
-        ? `Manual placement ON. Aim down at the ${manualSurfaceY === 0 ? 'floor' : 'tabletop'} until the yellow ring appears.`
-        : 'Manual placement OFF. Scanning for a real surface using WebXR hit-test.');
-      hintTextEl.innerHTML = manualMode
-        ? 'Estimated placement only: floor uses y=0 in local-floor space; table uses the selected approximate height. Aim the camera down at the spot.'
-        : 'Move slowly over a broad, well-lit, textured surface. Turn manual placement on if no ring appears.';
-      updateHud();
-    });
     manualSurfaceSelect.addEventListener('change', () => {
       manualSurfaceY = Number(manualSurfaceSelect.value) || 0;
-      if (session && placementMode && manualMode) {
+      if (session && placementMode) {
         hasSurface = false;
         currentHitMatrix = null;
+        reticleEl.setAttribute('visible', false);
       }
       updateHud();
     });
@@ -983,7 +909,7 @@
       throws = 0;
       resetPaper();
       setReadyPaperVisible(true);
-      setStatus(placed ? 'Score reset. Aim your phone at the bin and flick upward to throw again.' : 'Score reset. Enter AR and place the bin on a detected surface.');
+      setStatus(placed ? 'Score reset. Aim your phone at the bin and flick upward to throw again.' : 'Score reset. Enter AR, aim down at the floor/table, and place the bin.');
       updateHud();
     });
 
@@ -995,7 +921,7 @@
       } else {
         navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
           if (!supported) setStatus('This browser/device does not support immersive AR. Check ARCore compatibility and Google Play Services for AR.');
-          else setStatus('Ready. Tap Start AR Camera, scan for a surface, and tap Place the bin.');
+          else setStatus('Ready. Tap Start AR Camera, aim down at the floor/table, and tap Place the bin.');
         }).catch((error) => {
           console.warn('Could not check immersive AR support:', error);
           setStatus('Ready to try AR. Tap Start AR Camera; if it fails, check browser support and site permissions.');
