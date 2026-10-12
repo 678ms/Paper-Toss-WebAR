@@ -22,8 +22,7 @@
     .stat { background:rgba(255,255,255,.10); border:1px solid rgba(255,255,255,.1); border-radius:10px; padding:6px 9px; min-width:94px; font-size:11px; }
     .stat b { display:block; font-size:15px; letter-spacing:.01em; }
     #distanceLabel { color:#b6e7f8; }
-    /* Content-sized drawer: the closed state exposes only a small menu tab, and the open
-       state grows just enough for its controls (up to a safe mobile-height limit). */
+
     #controlsDrawer {
       position:fixed; z-index:30; left:12px; right:12px;
       bottom:calc(6px + env(safe-area-inset-bottom));
@@ -54,8 +53,7 @@
     #hud.xr-overlay { pointer-events:none; }
     #hud button, #hud select { pointer-events:auto; }
     #controlsDrawer button, #controlsDrawer select { pointer-events:auto; }
-    /* The stock A-Frame XR button was overlapped by the full-screen swipe layer on some phones.
-       Hide it and use our own explicit Start AR Camera button instead. */
+
     .a-enter-vr, .a-enter-ar, .a-enter-vr-button, .a-enter-ar-button,
     .a-vr-mode-ui, .a-xr-mode-ui { display:none !important; visibility:hidden !important; pointer-events:none !important; }
     #arBtn { min-width: 132px; }
@@ -69,12 +67,11 @@
   </style>
   <script src="https://aframe.io/releases/1.8.0/aframe.min.js"></script>
   <script>
-    // Normalize each model to a desired real-world height and keep its bottom or center at the origin.
-    // This avoids depending on the units used when the Sketchfab model was exported.
+
     AFRAME.registerComponent('fit-gltf-height', {
       schema: {
         height: { type: 'number', default: 0.3 },
-        align: { type: 'string', default: 'ground' } // ground | center
+        align: { type: 'string', default: 'ground' }
       },
       init: function () {
         this.done = false;
@@ -111,10 +108,6 @@
       }
     });
 
-    // Give the paper mesh a fixed matte material with NO texture dependency.
-    // The original GLTF base-colour map can render nearly black on some mobile GPU/
-    // WebXR combinations during fast rotation. Keep the original 3D geometry, but
-    // remove the map and lighting calculation entirely so the projectile stays light.
     AFRAME.registerComponent('paper-unlit-material', {
       init: function () {
         this.applyMaterial = this.applyMaterial.bind(this);
@@ -209,28 +202,21 @@
 
     <a-entity light="type: ambient; color: #ffffff; intensity: 1.25"></a-entity>
     <a-entity light="type: directional; color: #ffffff; intensity: 0.8" position="-1 3 2"></a-entity>
-    <!-- An origin at 0,0,0 is important: WebXR supplies the real camera's pose. -->
+
     <a-camera id="xrCamera" position="0 0 0" look-controls="enabled: false"></a-camera>
 
-    <!--
-      The ready paper is scene-space, not parented to the a-camera element.
-      In AR, its pose is updated from each live WebXR viewer pose. The projectile
-      uses this same entity's pose when launched, avoiding a jump to a separate
-      or stale coordinate frame.
-    -->
     <a-entity id="readyPaper" visible="false">
       <a-entity id="readyPaperModel" gltf-model="#paperAsset" fit-gltf-height="height: 0.075; align: center" paper-unlit-material></a-entity>
       <a-dodecahedron id="readyPaperFallback" radius="0.04" material="color: #eeeeee; roughness: 0.92" visible="true"></a-dodecahedron>
     </a-entity>
 
-    <!-- This follows the estimated camera-ray intersection while placing/repositioning. -->
     <a-entity id="surfaceReticle" visible="false">
       <a-ring position="0 0.002 0" rotation="-90 0 0" radius-inner="0.105" radius-outer="0.12" material="color: #ffd166; shader: flat; side: double; opacity: 0.95; transparent: true"></a-ring>
       <a-circle position="0 0.001 0" rotation="-90 0 0" radius="0.105" material="color: #ffd166; shader: flat; side: double; opacity: 0.14; transparent: true"></a-circle>
     </a-entity>
 
     <a-entity id="placementRoot" visible="false">
-      <!-- Floor/table contact marker. This is translucent and doesn't block the camera view. -->
+
       <a-circle position="0 0.003 0" rotation="-90 0 0" radius="0.21" material="color: #ffffff; shader: flat; opacity: 0.12; transparent: true; side: double"></a-circle>
 
       <a-entity id="trashBin" position="0 0 0">
@@ -267,9 +253,6 @@
     const menuToggle = $('menuToggle');
     const drawerContent = $('drawerContent');
 
-    // Load the success cue in advance. Web Audio is unlocked on the first user tap,
-    // then can play from the XR frame loop when a basket is registered. HTMLAudio is
-    // kept as a fallback for browsers that cannot decode the buffer through Web Audio.
     const basketSoundUrl = './assets/audio/yay-sound-fx.mp3';
     const basketSoundFallback = new Audio(basketSoundUrl);
     basketSoundFallback.preload = 'auto';
@@ -349,17 +332,15 @@
     const readyPaperEl = $('readyPaper');
     const readyPaperModelEl = $('readyPaperModel');
     const readyPaperFallbackEl = $('readyPaperFallback');
-    const paperEl = $('paper'); // First paper entity also serves as the template for later throws.
+    const paperEl = $('paper');
     let activePaperEl = paperEl;
     let paperInstanceCounter = 0;
     const paperLitterObjects = new Set();
 
-    // ---------------------- GAMEPLAY SETTINGS (meters / seconds) ----------------------
-    // These are approximate simple colliders, not mesh-triangle physics.
     const CFG = {
       gravity: 9.8,
       paperRadius: 0.026,
-      paperGroundY: 0.038, // Half of the 7.5 cm paper model, so the visible ball rests above the surface.
+      paperGroundY: 0.038,
       bin: { x: 0, z: 0, innerRadius: 0.102, outerRadius: 0.145, rimY: 0.30, insideY: 0.12 },
       maxFlightSeconds: 2.2,
       floorRestitution: 0.18,
@@ -378,7 +359,7 @@
     let hasSurface = false;
     let placed = false;
     let placementMode = true;
-    let manualSurfaceY = 0; // In local-floor coordinates: 0=floor, ~0.75m=tabletop.
+    let manualSurfaceY = 0;
     let active = false;
     let points = 0;
     let baskets = 0;
@@ -388,13 +369,13 @@
     let velocity = { x: 0, y: 0, z: 0 };
     let spinVelocity = { x: 0, y: 0, z: 0 };
     let throwDistance = 0;
-    // Camera-relative paper offset (metres), recreated in WebXR reference space.
+
     const READY_PAPER_OFFSET = new THREE.Vector3(0.07, -0.17, -0.36);
     const READY_PAPER_ROTATION = new THREE.Quaternion().setFromEuler(
       new THREE.Euler(THREE.MathUtils.degToRad(18), THREE.MathUtils.degToRad(-18), THREE.MathUtils.degToRad(-12))
     );
-    let latestCameraWorld = null;  // Vector3 in the XR reference space.
-    let latestCameraQuat = null;   // Quaternion in the XR reference space.
+    let latestCameraWorld = null;
+    let latestCameraQuat = null;
     let sessionSerial = 0;
     let failedModels = new Set();
     let loadedModels = new Set();
@@ -429,13 +410,10 @@
       }
     }
 
-    // Manual placement: cast the centre-camera ray onto an estimated horizontal
-    // plane in local-floor coordinates. This does not detect a real table; choose
-    // a typical table height in the selector and adjust it for your environment.
     function getManualPlacementMatrix() {
       if (!latestCameraWorld || !latestCameraQuat) return null;
       const direction = new THREE.Vector3(0, 0, -1).applyQuaternion(latestCameraQuat).normalize();
-      if (direction.y > -0.08) return null; // User must aim down toward the surface.
+      if (direction.y > -0.08) return null;
       const t = (manualSurfaceY - latestCameraWorld.y) / direction.y;
       if (!Number.isFinite(t) || t < 0.35 || t > 5.0) return null;
 
@@ -444,7 +422,7 @@
       const horizontal = new THREE.Vector3(direction.x, 0, direction.z);
       if (horizontal.lengthSq() < 0.0001) return null;
       horizontal.normalize();
-      // Local -Z points along the camera's horizontal viewing direction.
+
       const yaw = Math.atan2(horizontal.x, -horizontal.z);
       const quaternion = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
       return Array.from(new THREE.Matrix4().compose(position, quaternion, new THREE.Vector3(1, 1, 1)).elements);
@@ -477,9 +455,6 @@
       return rootEl.object3D.worldToLocal(latestCameraWorld.clone());
     }
 
-    // Keep the foreground paper at a stable screen position by recreating its
-    // pose in the same XR reference space used by surface placement. This avoids
-    // relying on a-camera's scene transform, which can differ from the live XR pose.
     function updateReadyPaperPose() {
       if (!session || !placed || placementMode || active || !latestCameraWorld || !latestCameraQuat) return;
       const offsetWorld = READY_PAPER_OFFSET.clone().applyQuaternion(latestCameraQuat);
@@ -495,9 +470,6 @@
       readyPaperEl.setAttribute('visible', Boolean(visible && placed && !placementMode && session));
     }
 
-    // Read the visible preview's actual scene-space pose and convert it to the
-    // bin/game local coordinates. The projectile therefore begins exactly where
-    // the player saw the paper immediately before the swipe.
     function readyPaperPoseInGameSpace() {
       if (!placed) return null;
       rootEl.object3D.updateMatrixWorld(true);
@@ -510,10 +482,6 @@
       return { position: localPosition, quaternion: localQuaternion };
     }
 
-    // Reuse one A-Frame projectile for every throw. Older builds cloned the A-Frame
-    // DOM after each result; cloned GLTF entities could reinitialize with inconsistent
-    // model/transform state, which is why later throws jumped. Landed papers are now
-    // static Three.js clones of the already-rendered projectile.
     function preparePaperForNextThrow() {
       activePaperEl = paperEl;
       paperEl.object3D.position.set(0, 0.8, 0);
@@ -532,7 +500,6 @@
       rootEl.object3D.updateMatrixWorld(true);
       paperLitterObjects.add(litter);
 
-      // Hide and reset the single projectile only after its landed visual was copied.
       activePaperEl = paperEl;
       paperEl.setAttribute('visible', false);
       paperEl.object3D.position.set(0, 0.8, 0);
@@ -559,10 +526,10 @@
     function clearPaperLitter() {
       setReadyPaperVisible(false);
       active = false;
-      // Litter clones are Three.js objects, not A-Frame DOM entities.
+
       paperLitterObjects.forEach((object) => rootEl.object3D.remove(object));
       paperLitterObjects.clear();
-      // Clean up any remnants created by earlier builds, if this script is hot-reloaded.
+
       document.querySelectorAll('.paper-instance').forEach((entity) => entity.remove());
       activePaperEl = paperEl;
       paperEl.setAttribute('visible', false);
@@ -582,7 +549,7 @@
         return;
       }
       if (active) return;
-      // Clear accumulated miss litter whenever the player chooses to reposition.
+
       clearPaperLitter();
       placementMode = true;
       hasSurface = false;
@@ -608,7 +575,7 @@
       setReadyPaperVisible(true);
       setStatus('Bin placed! The paper is ready at the front of your view. Aim your phone at the bin and flick upward to throw.');
       hintTextEl.innerHTML = 'The scrunched paper at the bottom of the screen is your launch point. Swipe upward over the view to throw; swipe up-left or up-right to steer. Repositioning clears landed paper.';
-      // Hide the drawer once the bin is placed, leaving the camera view open for play.
+
       setControlsOpen(false);
       updateHud();
     }
@@ -700,7 +667,7 @@
       reticleEl.setAttribute('visible', false);
       setReadyPaperVisible(false);
       if (active) resetPaper();
-      // Clear static paper from the previous XR reference space and require a fresh placement.
+
       clearPaperLitter();
       placed = false;
       placementMode = true;
@@ -709,7 +676,6 @@
       updateHud();
     }
 
-    // Detect when A-Frame's AR-mode UI has opened/closed a WebXR session.
     function watchXRSession() {
       const current = scene.renderer && scene.renderer.xr ? scene.renderer.xr.getSession() : null;
       if (current && current !== session) startHitTesting(current);
@@ -730,7 +696,7 @@
       playBasketSound();
       points += earned;
       baskets += 1;
-      // Preserve a static copy inside the bin, then reuse the same projectile entity.
+
       setPaperPosition({ x: CFG.bin.x, y: CFG.bin.insideY, z: CFG.bin.z });
       activePaperEl.object3D.updateMatrixWorld(true);
       preserveActivePaperAsLitter();
@@ -743,7 +709,7 @@
     }
 
     function missThrow(message = 'Miss! Try a faster or slower upward swipe, and aim toward the bin.') {
-      // Keep the missed paper at impact X/Z and settle it onto the placed surface.
+
       const pos = activePaperEl.object3D.position;
       pos.y = CFG.paperGroundY;
       activePaperEl.object3D.rotation.x = (Math.random() - 0.5) * 0.55;
@@ -758,9 +724,6 @@
       updateHud();
     }
 
-    // Convert a camera-space axis into the game root's local coordinates by
-    // transforming two points. This accounts for the placed game's full world
-    // transform and avoids mixing XR reference-space vectors with bin-local axes.
     function cameraAxisInGameSpace(cameraAxis) {
       if (!latestCameraWorld || !latestCameraQuat) return null;
       rootEl.object3D.updateMatrixWorld(true);
@@ -780,7 +743,6 @@
       if (!gesture || !Number.isFinite(gesture.power)) return;
       preparePaperForNextThrow();
 
-      // Freeze range at release time. The bin never aims or attracts the paper.
       const cameraLocal = getCameraLocalPosition();
       if (!cameraLocal) {
         setStatus('Waiting for camera tracking…');
@@ -788,9 +750,6 @@
       }
       throwDistance = Math.hypot(cameraLocal.x - CFG.bin.x, cameraLocal.z - CFG.bin.z);
 
-      // Use the same XR viewer pose that placed the visible preview. The forward
-      // vector sets heading; its downward pitch gently flattens the arc when the
-      // player aims toward a low bin. No bin-seeking or homing vector is applied.
       const cameraForward = cameraAxisInGameSpace(new THREE.Vector3(0, 0, -1));
       const cameraRight = cameraAxisInGameSpace(new THREE.Vector3(1, 0, 0));
       const spawnPose = readyPaperPoseInGameSpace();
@@ -812,8 +771,7 @@
 
       const sideRatio = clamp(gesture.dx / Math.max(gesture.up, 1), -0.65, 0.65);
       const power = clamp(gesture.power, 0.08, 1.0);
-      // Tuned for short Paper Toss throws instead of the previous long, flat overshoot.
-      // Swipe speed increases forward velocity; phone pitch lets the player aim low/high.
+
       const horizontalSpeed = 1.15 + power * 3.25;
       const verticalVelocity = clamp(
         1.30 + power * 1.15 + clamp(pitch, -0.45, 0.25) * horizontalSpeed * 0.45,
@@ -822,8 +780,6 @@
       );
       const sideVelocity = sideRatio * horizontalSpeed * 0.55;
 
-      // Spawn at the exact world-space pose of the preview; do not clamp its height
-      // or reconstruct it from a separate camera offset, both of which caused a pop.
       setReadyPaperVisible(false);
       setPaperPosition({
         x: spawnPose.position.x,
@@ -838,7 +794,7 @@
         y: verticalVelocity,
         z: forward.z * horizontalSpeed + right.z * sideVelocity
       };
-      // A paper ball should tumble visibly after the flick, rather than glide like a dot.
+
       spinVelocity = {
         x: 5.0 + power * 9.0,
         y: sideRatio * 4.0,
@@ -846,7 +802,7 @@
       };
 
       flightTime = 0;
-      lastFrameTime = null; // Keep the projectile visible at its exact launch point for one frame.
+      lastFrameTime = null;
       active = true;
       throws += 1;
       setPaperVisible(true);
@@ -862,10 +818,8 @@
       const previousY = activePaperEl.object3D.position.y;
       const pos = activePaperEl.object3D.position;
 
-      // Gravity: downward acceleration in the placement's local up/down axis.
       velocity.y -= CFG.gravity * dt;
 
-      // Semi-implicit Euler integration in small substeps keeps collisions stable on phones.
       pos.x += velocity.x * dt;
       pos.y += velocity.y * dt;
       pos.z += velocity.z * dt;
@@ -878,7 +832,6 @@
       const radialDistance = Math.hypot(dx, dz);
       const crossedRimDownward = previousY > CFG.bin.rimY && pos.y <= CFG.bin.rimY && velocity.y < 0;
 
-      // Opening / rim collision. A score requires a downward crossing into the inner opening.
       if (crossedRimDownward) {
         if (radialDistance < CFG.bin.innerRadius - CFG.paperRadius) {
           winThrow();
@@ -892,7 +845,6 @@
         }
       }
 
-      // Bin outer-wall collision. The cylinder is an approximation of the uploaded mesh.
       if (pos.y > CFG.paperRadius && pos.y < CFG.bin.rimY && radialDistance < CFG.bin.outerRadius + CFG.paperRadius && radialDistance > CFG.bin.innerRadius - CFG.paperRadius) {
         const safeDistance = CFG.bin.outerRadius + CFG.paperRadius;
         const nx = radialDistance > 0.0001 ? dx / radialDistance : 1;
@@ -906,7 +858,6 @@
         }
       }
 
-      // Surface collision (floor or table top); bounce once, then count it as a miss.
       if (pos.y <= CFG.paperRadius) {
         pos.y = CFG.paperRadius;
         if (Math.abs(velocity.y) > 0.38 && flightTime < 1.9) {
@@ -935,14 +886,11 @@
 
     function frameLoop(now) {
       requestAnimationFrame(frameLoop);
-      // The immersive XRSession has its own frame clock. Avoid double-stepping physics.
+
       if (session) return;
       advancePhysics(now);
     }
 
-    // Explicit AR launch button. Keep the request directly inside the user gesture
-    // (do not await a capability probe first), because browsers require user activation
-    // to start an immersive WebXR session and show the camera feed.
     arBtn.addEventListener('click', () => {
       if (arRequestPending) return;
 
@@ -974,7 +922,7 @@
       updateHud();
       setStatus('Opening AR camera… accept any browser or AR permission prompt.');
       try {
-        // Calling this immediately preserves the browser's user-gesture activation.
+
         Promise.resolve(scene.enterAR()).then(() => {
           arRequestPending = false;
           updateHud();
@@ -1021,9 +969,6 @@
     });
     repositionBtn.addEventListener('click', enterPlacementMode);
 
-    // Swipe upward on the transparent AR overlay to throw. The power comes from
-    // normalized finger speed (screen heights per second), which adapts better to
-    // different phone resolutions than raw pixels per second.
     let swipeStart = null;
     swipeSurface.addEventListener('pointerdown', (event) => {
       if (!session || !placed || placementMode || active) return;
@@ -1047,7 +992,7 @@
       if (!session || !placed || placementMode || active) return;
 
       const dx = event.clientX - start.x;
-      const up = start.y - event.clientY; // Positive means the finger swiped upward.
+      const up = start.y - event.clientY;
       const duration = Math.max(0.06, (performance.now() - start.time) / 1000);
       const screenScale = Math.max(1, Math.min(window.innerWidth, window.innerHeight));
       const distanceNormalized = Math.hypot(dx, up) / screenScale;
@@ -1089,7 +1034,7 @@
       }
       requestAnimationFrame(frameLoop);
       requestAnimationFrame(watchXRSession);
-      // Missing resources may emit either model-error or asset-item errors, depending on which file fails.
+
       document.querySelectorAll('a-asset-item').forEach((asset) => {
         asset.addEventListener('error', () => {
           assetWarningEl.textContent = 'A model asset could not be fetched. Check the network request and the model folder paths.';
@@ -1101,12 +1046,11 @@
       const current = scene.renderer && scene.renderer.xr ? scene.renderer.xr.getSession() : null;
       if (current && current !== session) startHitTesting(current);
     }
-    // Enter AR is normally announced by enter-vr in A-Frame; listen to enter-ar too
-    // for versions that emit a separate AR event. The frame watcher is a fallback.
+
     scene.addEventListener('enter-vr', beginHitTestIfSessionExists);
     scene.addEventListener('enter-ar', beginHitTestIfSessionExists);
     scene.addEventListener('exit-vr', () => {
-      // A-Frame fires exit-vr when an immersive session closes, including AR mode.
+
       if (session && !(scene.renderer && scene.renderer.xr && scene.renderer.xr.getSession())) stopHitTesting();
     });
     scene.addEventListener('exit-ar', () => {
