@@ -1,4 +1,4 @@
-
+#Paper Toss Web AR
 This is a WebAR Game using the A-Frame and Three.js
 
 The game is about throwing a scrunched paper to a trash bin.
