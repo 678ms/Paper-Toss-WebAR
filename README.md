@@ -22,3 +22,8 @@ Source : [Yay Sound](https://www.freesoundslibrary.com/yay-sound-fx/)
 For ease of testing i deployed the WebAR on GitHub Pages : [Paper Toss WebAR](https://678ms.github.io/Paper-Toss-WebAR/)
 
 You can run it in your device yourself by downloading the source code and hosting it on a HTTP/HTTPS Server.
+
+## Reference
+A-Frame Documentation, https://aframe.io/docs/1.8.0/introduction/
+
+Three.js manual, https://threejs.org/manual/ 
